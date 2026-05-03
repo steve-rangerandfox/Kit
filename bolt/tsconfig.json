@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "esModuleInterop": true,
+    "strict": false,
+    "skipLibCheck": true,
+    "outDir": "dist",
+    "rootDir": "src",
+    "baseUrl": ".",
+    "paths": {
+      "@agents/*": ["../src/lib/inngest/agents/*"],
+      "@lib/*": ["../src/lib/*"]
+    }
+  },
+  "include": ["src/**/*", "../src/lib/inngest/**/*", "../src/lib/harvest/**/*", "../src/lib/provisioner/**/*", "../src/lib/mcp/slack.ts"]
+}

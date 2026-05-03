@@ -1,0 +1,16 @@
+# Kit Bolt — Railway Configuration
+# Persistent Slack bot via Socket Mode (WebSocket, not HTTP)
+# No need for a public port — Socket Mode connects outbound to Slack
+
+[build]
+# Dockerfile is in bolt/ but context must be repo root
+# to access shared code in src/lib/
+dockerfilePath = "bolt/Dockerfile"
+
+[deploy]
+numReplicas = 1
+restartPolicyType = "ALWAYS"
+healthcheckPath = ""
+
+# No sleep — Kit must be online 24/7
+sleepApplication = false

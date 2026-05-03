@@ -1,0 +1,182 @@
+@import "tailwindcss";
+@import url("https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap");
+@import url("https://api.fontshare.com/v2/css?f[]=satoshi@400,500,600,700&display=swap");
+
+@theme {
+  --color-background: #0c0e12;
+  --color-surface: #181b24;
+  --color-text: #ffffff;
+  --color-text-secondary: #b4b8c3;
+  --color-border: #2a2f3d;
+
+  /* Health & Status Colors */
+  --color-success: #10b981;
+  --color-warning: #f59e0b;
+  --color-danger: #ef4444;
+
+  /* Accent */
+  --color-accent: #6366f1;
+
+  /* Semantic */
+  --color-info: #3b82f6;
+
+  /* Font Families */
+  --font-satoshi: "Satoshi", sans-serif;
+  --font-mono: "JetBrains Mono", monospace;
+
+  /* Shadows */
+  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+  --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+  --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.2);
+  --shadow-xl: 0 20px 25px -5px rgb(0 0 0 / 0.3);
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+html.dark {
+  color-scheme: dark;
+}
+
+body {
+  background-color: #0c0e12;
+  color: #ffffff;
+  font-family: "Satoshi", sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Card Utilities */
+.kit-card {
+  background-color: #181b24;
+  border-radius: 0.5rem;
+  padding: 1rem;
+}
+
+.kit-card-interactive {
+  background-color: #181b24;
+  border-radius: 0.5rem;
+  padding: 1rem;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  cursor: pointer;
+}
+
+.kit-card-interactive:hover {
+  background-color: #1f2332;
+  box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.2);
+}
+
+.kit-card-interactive:active {
+  transform: scale(0.98);
+}
+
+/* Text Utilities */
+.text-xs {
+  font-size: 12px;
+}
+
+.text-sm {
+  font-size: 14px;
+}
+
+.text-base {
+  font-size: 16px;
+}
+
+.text-lg {
+  font-size: 18px;
+}
+
+.text-xl {
+  font-size: 20px;
+}
+
+.text-2xl {
+  font-size: 24px;
+}
+
+.text-3xl {
+  font-size: 30px;
+}
+
+/* Data/Numbers Typography */
+.font-mono {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 14px;
+}
+
+/* Accessible Toggle Switch */
+.toggle-switch {
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+}
+
+.toggle-switch input {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  width: 2.5rem;
+  height: 1.5rem;
+  background-color: #2a2f3d;
+  border-radius: 9999px;
+  cursor: pointer;
+  position: relative;
+  transition: background-color 0.2s;
+  border: none;
+  outline: 2px solid transparent;
+  outline-offset: 2px;
+}
+
+.toggle-switch input:focus-visible {
+  outline: 2px solid #6366f1;
+  outline-offset: 2px;
+}
+
+.toggle-switch input:checked {
+  background-color: #10b981;
+}
+
+.toggle-switch input::before {
+  content: '';
+  position: absolute;
+  width: 1.25rem;
+  height: 1.25rem;
+  border-radius: 9999px;
+  background-color: #ffffff;
+  top: 0.125rem;
+  left: 0.125rem;
+  transition: left 0.2s;
+}
+
+.toggle-switch input:checked::before {
+  left: 1.125rem;
+}
+
+.toggle-switch input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Ensure minimum text size */
+p, span, div, a, button, label {
+  font-size: 14px;
+}
+
+/* Ensure no text-[10px] is applied globally */
+@layer utilities {
+  .text-\[10px\] {
+    @apply text-xs;
+  }
+}

@@ -1,0 +1,298 @@
+// @ts-nocheck
+/**
+ * Slack Agent — Communication & Collaboration Expert
+ *
+ * Knows everything about the studio's Slack workspace: channels,
+ * messages, canvases, users, and notifications. Kit routes any
+ * communication, notification, or channel management question here.
+ */
+
+import {
+  createProjectSlackChannel,
+  postProjectLinks,
+  createProjectCanvas,
+} from '@/lib/mcp/slack'
+import type { AgentDefinition, AgentResult } from './types'
+
+const SLACK_API = 'https://slack.com/api'
+
+function slackHeaders() {
+  return {
+    Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`,
+    'Content-Type': 'application/json; charset=utf-8',
+  }
+}
+
+async function slackPost(method: string, body: Record<string, unknown>): Promise<any> {
+  const res = await fetch(`${SLACK_API}/${method}`, {
+    method: 'POST',
+    headers: slackHeaders(),
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(10_000),
+  })
+  const data = await res.json()
+  if (!data.ok) throw new Error(`Slack ${method}: ${data.error}`)
+  return data
+}
+
+// ─── Action Handlers ───────────────────────────────────────
+
+async function provision(payload: Record<string, unknown>): Promise<AgentResult> {
+  try {
+    const channel = await createProjectSlackChannel({
+      projectId: payload.projectId as string,
+      projectName: payload.projectName as string,
+      client: payload.client as string,
+      projectType: payload.projectType as string | undefined,
+      targetDelivery: payload.targetDelivery as string | undefined,
+    })
+
+    // Post collected links if any
+    const links: Record<string, string> = {}
+    const collected = payload.collectedLinks as Record<string, string> | undefined
+    if (collected) {
+      if (collected.harvest) links['Harvest'] = collected.harvest
+      if (collected.dropbox) links['Dropbox'] = collected.dropbox
+      if (collected.frameio) links['Frame.io'] = collected.frameio
+      if (collected.canva) links['Canva'] = collected.canva
+    }
+    if (Object.keys(links).length > 0) {
+      await postProjectLinks({ channelId: channel.channelId, links })
+    }
+
+    // Create canvas
+    let canvasId: string | null = null
+    try {
+      canvasId = await createProjectCanvas({
+        channelId: channel.channelId,
+        projectName: payload.projectName as string,
+        projectCode: payload.projectCode as string | undefined,
+        client: payload.client as string,
+        projectType: payload.projectType as string | undefined,
+        targetDelivery: payload.targetDelivery as string | undefined,
+        startDate: payload.startDate as string | undefined,
+        briefSummary: payload.briefSummary as string | undefined,
+        links: {
+          dropbox: collected?.dropbox,
+          frameio: collected?.frameio,
+          harvest: collected?.harvest,
+        },
+      })
+    } catch (e: any) {
+      console.warn('[SlackAgent] Canvas failed (non-fatal):', e.message)
+    }
+
+    return {
+      agent: 'slack',
+      action: 'provision',
+      success: true,
+      url: channel.url,
+      id: channel.channelId,
+      message: `Created #${channel.channelName}${canvasId ? ' with project canvas' : ''}`,
+      data: { channelName: channel.channelName, canvasId },
+    }
+  } catch (err: any) {
+    return { agent: 'slack', action: 'provision', success: false, error: err.message }
+  }
+}
+
+async function sendMessage(payload: Record<string, unknown>): Promise<AgentResult> {
+  try {
+    const channel = payload.channel as string
+    const text = payload.text as string
+    const threadTs = payload.threadTs as string | undefined
+
+    const body: Record<string, unknown> = { channel, text }
+    if (threadTs) body.thread_ts = threadTs
+
+    const data = await slackPost('chat.postMessage', body)
+
+    return {
+      agent: 'slack',
+      action: 'send_message',
+      success: true,
+      message: `Message sent to ${channel}`,
+      data: { channel, ts: data.ts, threadTs },
+    }
+  } catch (err: any) {
+    return { agent: 'slack', action: 'send_message', success: false, error: err.message }
+  }
+}
+
+async function findChannel(payload: Record<string, unknown>): Promise<AgentResult> {
+  try {
+    const query = (payload.query as string).toLowerCase()
+    const data = await slackPost('conversations.list', {
+      types: 'public_channel,private_channel',
+      limit: 200,
+      exclude_archived: true,
+    })
+
+    const matches = (data.channels || [])
+      .filter((ch: any) =>
+        ch.name.toLowerCase().includes(query) ||
+        (ch.topic?.value || '').toLowerCase().includes(query)
+      )
+      .slice(0, 10)
+      .map((ch: any) => ({
+        id: ch.id,
+        name: ch.name,
+        topic: ch.topic?.value || '',
+        memberCount: ch.num_members,
+      }))
+
+    return {
+      agent: 'slack',
+      action: 'find_channel',
+      success: true,
+      message: `Found ${matches.length} channel(s) matching "${query}"`,
+      data: { matches },
+    }
+  } catch (err: any) {
+    return { agent: 'slack', action: 'find_channel', success: false, error: err.message }
+  }
+}
+
+async function findUser(payload: Record<string, unknown>): Promise<AgentResult> {
+  try {
+    const query = (payload.query as string).toLowerCase()
+    const data = await slackPost('users.list', { limit: 200 })
+
+    const matches = (data.members || [])
+      .filter((u: any) =>
+        !u.deleted &&
+        !u.is_bot &&
+        (u.real_name?.toLowerCase().includes(query) ||
+         u.profile?.display_name?.toLowerCase().includes(query) ||
+         u.name?.toLowerCase().includes(query))
+      )
+      .slice(0, 10)
+      .map((u: any) => ({
+        id: u.id,
+        name: u.real_name || u.name,
+        displayName: u.profile?.display_name || '',
+        email: u.profile?.email || '',
+        title: u.profile?.title || '',
+      }))
+
+    return {
+      agent: 'slack',
+      action: 'find_user',
+      success: true,
+      message: `Found ${matches.length} user(s) matching "${query}"`,
+      data: { matches },
+    }
+  } catch (err: any) {
+    return { agent: 'slack', action: 'find_user', success: false, error: err.message }
+  }
+}
+
+async function setChannelTopic(payload: Record<string, unknown>): Promise<AgentResult> {
+  try {
+    const channel = payload.channel as string
+    const topic = payload.topic as string
+    await slackPost('conversations.setTopic', { channel, topic })
+
+    return {
+      agent: 'slack',
+      action: 'set_topic',
+      success: true,
+      message: `Updated topic for ${channel}`,
+      data: { channel, topic },
+    }
+  } catch (err: any) {
+    return { agent: 'slack', action: 'set_topic', success: false, error: err.message }
+  }
+}
+
+async function getChannelHistory(payload: Record<string, unknown>): Promise<AgentResult> {
+  try {
+    const channel = payload.channel as string
+    const limit = (payload.limit as number) || 20
+
+    const data = await slackPost('conversations.history', { channel, limit })
+    const messages = (data.messages || []).map((m: any) => ({
+      ts: m.ts,
+      user: m.user,
+      text: m.text?.slice(0, 300),
+      type: m.subtype || 'message',
+      threadReplies: m.reply_count || 0,
+    }))
+
+    return {
+      agent: 'slack',
+      action: 'get_history',
+      success: true,
+      message: `${messages.length} recent messages`,
+      data: { channel, messages },
+    }
+  } catch (err: any) {
+    return { agent: 'slack', action: 'get_history', success: false, error: err.message }
+  }
+}
+
+// ─── Agent Definition ──────────────────────────────────────
+
+export const slackAgent: AgentDefinition = {
+  id: 'slack',
+  name: 'Slack Agent',
+  domain: 'Slack',
+  expertise:
+    'Team communication, project channels, canvases, notifications, user lookup, and channel management. Ask me to send messages, find channels or people, check channel history, create project channels with canvases, or manage channel topics and notifications.',
+  requiredEnvVars: ['SLACK_BOT_TOKEN'],
+  capabilities: [
+    {
+      action: 'provision',
+      description: 'Create a project Slack channel with welcome message, project canvas, and provisioned links',
+      mutates: true,
+    },
+    {
+      action: 'send_message',
+      description: 'Send a message to a channel or thread',
+      inputDescription: 'channel (ID or name), text, threadTs (optional for replies)',
+      mutates: true,
+    },
+    {
+      action: 'find_channel',
+      description: 'Search for channels by name or topic',
+      inputDescription: 'query (search term)',
+      mutates: false,
+    },
+    {
+      action: 'find_user',
+      description: 'Find a Slack user by name, display name, or username',
+      inputDescription: 'query (name to search)',
+      mutates: false,
+    },
+    {
+      action: 'set_topic',
+      description: 'Update the topic of a channel',
+      inputDescription: 'channel (ID), topic (new topic text)',
+      mutates: true,
+    },
+    {
+      action: 'get_history',
+      description: 'Get recent messages from a channel',
+      inputDescription: 'channel (ID), limit (optional, default 20)',
+      mutates: false,
+    },
+  ],
+  handler: async (action, payload) => {
+    switch (action) {
+      case 'provision':
+        return provision(payload)
+      case 'send_message':
+        return sendMessage(payload)
+      case 'find_channel':
+        return findChannel(payload)
+      case 'find_user':
+        return findUser(payload)
+      case 'set_topic':
+        return setChannelTopic(payload)
+      case 'get_history':
+        return getChannelHistory(payload)
+      default:
+        return { agent: 'slack', action, success: false, error: `Unknown action: ${action}` }
+    }
+  },
+}
