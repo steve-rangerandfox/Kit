@@ -5,6 +5,7 @@
 [build]
 # Dockerfile is in bolt/ but context must be repo root
 # to access shared code in src/lib/
+builder = "DOCKERFILE"
 dockerfilePath = "bolt/Dockerfile"
 
 [deploy]
