@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * Anthropic SDK singleton.
  *

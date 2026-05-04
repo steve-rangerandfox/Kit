@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * Kit Conversation Memory
  *

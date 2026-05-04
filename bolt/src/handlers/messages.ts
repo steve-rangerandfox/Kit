@@ -2,302 +2,168 @@
 /**
  * Bolt Message Handlers
  *
- * Handles app_mention and direct message events. No timeout ceiling —
- * this runs in a persistent process on Railway, not a serverless function.
+ * Three paths:
+ *   1. Frame.io link detected → handleFrameIoLink (direct, no LLM)
+ *   2. Time-entry shorthand detected → handleTimeEntry (direct, no LLM)
+ *   3. Everything else → orchestrator (Claude)
  *
- * Flow:
- *   1. Detect special patterns (Frame.io links, time entries)
- *   2. Resolve workspace + user context for access control
- *   3. Dispatch to the agent registry for general requests
- *   4. Post the response back in-thread
+ * Triggers:
+ *   - app_mention: any @mention in a channel where Kit is invited
+ *   - message (DM): any message in a DM with Kit
+ *   - message (channel, no mention): only if Kit is awaitingClarification
+ *     from this (channel, user) within the TTL — enables follow-ups
+ *     without requiring re-@mention.
+ *
+ * All replies post in the main flow (no thread_ts).
  */
 
 import type { App } from '@slack/bolt'
 import { createAdminClient } from '../../../src/lib/supabase/admin'
-import { dispatch, getCapabilitiesManifest } from '../../../src/lib/inngest/agents/registry'
-import {
-  resolveUserContext,
-  checkGateway,
-  filterResultData,
-} from '../../../src/lib/inngest/access-control'
+import { resolveUserContext } from '../../../src/lib/inngest/access-control'
 import { messageHasFrameIoLink, handleFrameIoLink } from '../../../src/lib/frameio/slack-handler'
 import { isTimeEntryMessage, handleTimeEntry } from '../../../src/lib/harvest/slack-handler'
 
+import { runOrchestrator } from '../llm/orchestrator'
+import { hasPendingClarification } from '../llm/memory'
+import { setThinking, clearThinking } from '../llm/status'
+
 export function registerMessageHandlers(app: App) {
   // ─── @mentions ────────────────────────────────────────────
-  app.event('app_mention', async ({ event, say, client }) => {
-    // Ignore bot messages (prevent loops)
+  app.event('app_mention', async ({ event, client }) => {
     if (event.bot_id || (event as any).subtype === 'bot_message') return
 
     const channelId = event.channel
-    const threadTs = event.thread_ts || event.ts
-    const messageText = event.text || ''
+    const messageText = (event.text || '').replace(/<@[A-Z0-9]+>/g, '').trim()
     const userId = event.user
+    const teamId = (event as any).team || ''
 
-    try {
-      // Resolve workspace from Slack team
-      const teamId = (event as any).team || ''
-      const workspaceId = await resolveWorkspaceId(teamId)
-
-      // ── Frame.io link detection ───────────────────────────
-      if (messageHasFrameIoLink(messageText)) {
-        console.log('[Bolt] Frame.io link detected in mention')
-        await handleFrameIoLink({
-          text: messageText,
-          channelId,
-          threadTs,
-          messageTs: event.ts,
-          userId,
-          workspaceId,
-        })
-        return
-      }
-
-      // ── Time entry detection ──────────────────────────────
-      if (isTimeEntryMessage(messageText)) {
-        console.log('[Bolt] Time entry detected in mention')
-        await handleTimeEntry({
-          text: messageText,
-          channelId,
-          threadTs,
-          messageTs: event.ts,
-          userId,
-          workspaceId,
-        })
-        return
-      }
-
-      // ── Agent dispatch ────────────────────────────────────
-      // Strip the @mention from the text to get the actual request
-      const cleanText = messageText.replace(/<@[A-Z0-9]+>/g, '').trim()
-      if (!cleanText) {
-        await say({ text: "Hey! What can I help you with?", thread_ts: threadTs })
-        return
-      }
-
-      const response = await handleAgentRequest({
-        text: cleanText,
-        userId,
-        workspaceId,
-        channelId,
-        threadTs,
-      })
-
-      await say({ text: response, thread_ts: threadTs })
-    } catch (err: any) {
-      console.error('[Bolt] app_mention handler error:', err)
-      await say({
-        text: `I hit an error processing that: ${err.message || 'unknown'}`,
-        thread_ts: threadTs,
-      })
-    }
+    await handleConversationalMessage({
+      app,
+      channelId,
+      userId,
+      teamId,
+      messageText,
+      messageTs: event.ts,
+      threadTs: event.thread_ts || event.ts,
+      isDirectMention: true,
+    })
   })
 
-  // ─── Direct Messages ──────────────────────────────────────
-  app.event('message', async ({ event, say }) => {
-    // Only handle DMs (im channel type)
+  // ─── DMs and channel-with-pending-clarification ───────────
+  app.event('message', async ({ event }) => {
     const msgEvent = event as any
-    if (msgEvent.channel_type !== 'im') return
 
-    // Ignore bot messages, message_changed, etc.
+    // Skip bot/system messages
     if (msgEvent.bot_id || msgEvent.subtype) return
 
-    const channelId = msgEvent.channel
-    const threadTs = msgEvent.thread_ts || msgEvent.ts
-    const messageText = msgEvent.text || ''
+    const isDM = msgEvent.channel_type === 'im'
     const userId = msgEvent.user
+    const channelId = msgEvent.channel
+    const teamId = msgEvent.team || ''
 
-    try {
-      const teamId = msgEvent.team || ''
-      const workspaceId = await resolveWorkspaceId(teamId)
-
-      // Frame.io links work in DMs too
-      if (messageHasFrameIoLink(messageText)) {
-        console.log('[Bolt] Frame.io link detected in DM')
-        await handleFrameIoLink({
-          text: messageText,
-          channelId,
-          threadTs,
-          messageTs: msgEvent.ts,
-          userId,
-          workspaceId,
-        })
-        return
-      }
-
-      // Time entries in DMs
-      if (isTimeEntryMessage(messageText)) {
-        console.log('[Bolt] Time entry detected in DM')
-        await handleTimeEntry({
-          text: messageText,
-          channelId,
-          threadTs,
-          messageTs: msgEvent.ts,
-          userId,
-          workspaceId,
-        })
-        return
-      }
-
-      // Agent dispatch
-      const response = await handleAgentRequest({
-        text: messageText,
-        userId,
-        workspaceId,
-        channelId,
-        threadTs,
-      })
-
-      await say({ text: response, thread_ts: threadTs })
-    } catch (err: any) {
-      console.error('[Bolt] DM handler error:', err)
-      await say({
-        text: `I hit an error processing that: ${err.message || 'unknown'}`,
-        thread_ts: threadTs,
-      })
+    // For non-DM messages without @mention, only act if Kit is awaiting clarification
+    if (!isDM) {
+      if (!hasPendingClarification(teamId, channelId, userId)) return
     }
+
+    // (App_mention event handles the @mention path; ignore mentions here to avoid double-fire)
+    if ((msgEvent.text || '').includes('<@') && !isDM) return
+
+    await handleConversationalMessage({
+      app,
+      channelId,
+      userId,
+      teamId,
+      messageText: (msgEvent.text || '').trim(),
+      messageTs: msgEvent.ts,
+      threadTs: msgEvent.thread_ts || msgEvent.ts,
+      isDirectMention: false,
+    })
   })
 }
 
-// ─── Agent Request Handler ──────────────────────────────────
-// This is the core dispatch logic that replaces the managed-agent
-// webhook router. It runs directly in-process — no Inngest, no
-// serverless timeout, no cold starts.
-
-interface AgentRequest {
-  text: string
-  userId: string
-  workspaceId: string
+// ─── Shared handler ────────────────────────────────────────
+interface HandlerArgs {
+  app: App
   channelId: string
+  userId: string
+  teamId: string
+  messageText: string
+  messageTs: string
   threadTs: string
+  isDirectMention: boolean
 }
 
-async function handleAgentRequest(req: AgentRequest): Promise<string> {
-  const { text, userId, workspaceId } = req
+async function handleConversationalMessage(args: HandlerArgs): Promise<void> {
+  const { app, channelId, userId, teamId, messageText, messageTs, threadTs } = args
 
-  // Resolve user context for access control
+  if (!messageText) {
+    await app.client.chat.postMessage({
+      channel: channelId,
+      text: "Hey! What can I help you with?",
+    })
+    return
+  }
+
+  // Resolve workspace + user context
+  const workspaceId = await resolveWorkspaceId(teamId)
   const user = workspaceId
     ? await resolveUserContext(workspaceId, userId)
     : null
 
-  // Intent resolution: figure out which agent + action to call.
-  // This is a simple keyword-based router for now. In the future,
-  // Kit's LLM layer will handle intent resolution via the MCP tools.
-  const intent = resolveIntent(text)
-
-  if (!intent) {
-    // No clear intent — acknowledge and give guidance
-    return "I'm not sure what you need. Try asking me about:\n" +
-      "• Time tracking (\"log 2 hours on Project X\")\n" +
-      "• Project info (\"what's the budget on Project Y\")\n" +
-      "• Files (\"find the latest cut for Project Z\")\n" +
-      "• Reviews (\"any new comments on the hero video?\")\n" +
-      "Or use `/kit newproject` to spin up a new project."
+  // ── Fast path 1: Frame.io link ──────────────────────────
+  if (messageHasFrameIoLink(messageText)) {
+    console.log('[Bolt] Frame.io link detected')
+    await handleFrameIoLink({
+      text: messageText,
+      channelId,
+      threadTs,
+      messageTs,
+      userId,
+      workspaceId: workspaceId || '',
+    })
+    return
   }
 
-  // Gateway check
-  if (user) {
-    const access = checkGateway(user, intent.agentId, intent.action)
-    if (!access.allowed) {
-      return access.reason || "Sorry, that's restricted information."
-    }
+  // ── Fast path 2: Time entry shorthand ───────────────────
+  if (isTimeEntryMessage(messageText)) {
+    console.log('[Bolt] Time-entry shorthand detected')
+    await handleTimeEntry({
+      text: messageText,
+      channelId,
+      threadTs,
+      messageTs,
+      userId,
+      workspaceId: workspaceId || '',
+    })
+    return
   }
 
-  // Dispatch to agent
-  const result = await dispatch(intent.agentId, intent.action, intent.payload)
+  // ── Path 3: Orchestrator ────────────────────────────────
+  await setThinking(app, channelId, threadTs, 'thinking…')
 
-  if (!result.success) {
-    return `Couldn't complete that: ${result.error || 'unknown error'}`
+  try {
+    const { reply } = await runOrchestrator({
+      teamId,
+      channel: channelId,
+      userId,
+      user,
+      message: messageText,
+    })
+
+    await app.client.chat.postMessage({
+      channel: channelId,
+      text: reply,
+    })
+  } catch (err: any) {
+    console.error('[Bolt] orchestrator error:', err)
+    await app.client.chat.postMessage({
+      channel: channelId,
+      text: "I'm having trouble thinking clearly — try again in a sec?",
+    })
+  } finally {
+    await clearThinking(app, channelId, threadTs)
   }
-
-  // Field-level filtering
-  if (user && result.data) {
-    result.data = filterResultData(result.data, user)
-  }
-
-  // Format response
-  return formatAgentResponse(result)
-}
-
-// ─── Intent Resolution ──────────────────────────────────────
-// Simple pattern matching for common requests. This is the "v1"
-// router — Kit's LLM layer will eventually replace this with
-// proper NLU using kit_list_agents / kit_ask_agent.
-
-interface ResolvedIntent {
-  agentId: string
-  action: string
-  payload: Record<string, unknown>
-}
-
-function resolveIntent(text: string): ResolvedIntent | null {
-  const lower = text.toLowerCase()
-
-  // ── Time logging ──────────────────────────────────────────
-  if (lower.match(/log\s+\d+(\.\d+)?\s*(hours?|hrs?|h)\b/)) {
-    return { agentId: 'harvest', action: 'log_time', payload: { rawText: text } }
-  }
-
-  // ── Budget queries ────────────────────────────────────────
-  if (lower.match(/budget|spend|burn\s*rate|how much/)) {
-    return { agentId: 'harvest', action: 'get_budget', payload: { rawText: text } }
-  }
-
-  // ── Project search ────────────────────────────────────────
-  if (lower.match(/find project|list projects|what projects|my projects/)) {
-    return { agentId: 'harvest', action: 'find_projects', payload: { rawText: text } }
-  }
-
-  // ── File search ───────────────────────────────────────────
-  if (lower.match(/find|search|latest|where is|locate/) && lower.match(/file|cut|render|export|doc/)) {
-    return { agentId: 'dropbox', action: 'search', payload: { query: text } }
-  }
-
-  // ── Review comments ───────────────────────────────────────
-  if (lower.match(/comment|review|feedback|notes/) && lower.match(/frame|video|asset/)) {
-    return { agentId: 'frameio', action: 'get_comments', payload: { rawText: text } }
-  }
-
-  // ── Review status ─────────────────────────────────────────
-  if (lower.match(/review status|approval|approved|pending review/)) {
-    return { agentId: 'frameio', action: 'get_review_status', payload: { rawText: text } }
-  }
-
-  // ── Team info ─────────────────────────────────────────────
-  if (lower.match(/team|who('s| is) on|members|assigned/)) {
-    return { agentId: 'harvest', action: 'get_team', payload: { rawText: text } }
-  }
-
-  // ── Channel management ────────────────────────────────────
-  if (lower.match(/set topic|change topic|update topic/)) {
-    return { agentId: 'slack', action: 'set_topic', payload: { rawText: text } }
-  }
-
-  return null
-}
-
-// ─── Response Formatting ────────────────────────────────────
-
-function formatAgentResponse(result: any): string {
-  // If the agent returned a message, use it
-  if (result.message) return result.message
-
-  // Otherwise build a simple response from the data
-  if (result.data) {
-    // Don't dump raw JSON — give a readable summary
-    if (typeof result.data === 'object') {
-      const keys = Object.keys(result.data)
-      if (keys.length <= 5) {
-        return Object.entries(result.data)
-          .map(([k, v]) => `*${k}*: ${v}`)
-          .join('\n')
-      }
-      return `Done. Got ${keys.length} fields back from ${result.agent}.`
-    }
-    return String(result.data)
-  }
-
-  return `✓ ${result.agent}:${result.action} completed.`
 }
 
 // ─── Helpers ────────────────────────────────────────────────
@@ -315,7 +181,6 @@ async function resolveWorkspaceId(teamId: string): Promise<string> {
 
     if (data?.id) return data.id
 
-    // Fallback: first workspace (single-tenant dev)
     const { data: first } = await supabase
       .from('workspaces')
       .select('id')
