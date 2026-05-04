@@ -32,7 +32,7 @@ registerMessageHandlers(app)
 registerCommandHandlers(app)
 registerInteractionHandlers(app)
 
-// ─── Resilience ────────────────────────────────────────────
+// ─── Resilience + Diagnostics ──────────────────────────────
 
 process.on('unhandledRejection', (reason) => {
   console.error('[Bolt] Unhandled rejection:', reason)
@@ -40,6 +40,21 @@ process.on('unhandledRejection', (reason) => {
 process.on('uncaughtException', (err) => {
   console.error('[Bolt] Uncaught exception:', err)
 })
+
+// Log who's killing us and when
+process.on('SIGTERM', () => {
+  console.log(`[Bolt] received SIGTERM at uptime ${Math.floor(process.uptime())}s — exiting`)
+  process.exit(0)
+})
+process.on('SIGINT', () => {
+  console.log(`[Bolt] received SIGINT at uptime ${Math.floor(process.uptime())}s — exiting`)
+  process.exit(0)
+})
+
+// Heartbeat so we can see how long we live and whether anything happens before SIGTERM
+setInterval(() => {
+  console.log(`[Bolt] heartbeat — uptime ${Math.floor(process.uptime())}s, mem ${Math.round(process.memoryUsage().rss / 1024 / 1024)}MB`)
+}, 5000)
 
 // ─── Health Server ─────────────────────────────────────────
 // Railway expects a service to bind to $PORT — without it, the platform
