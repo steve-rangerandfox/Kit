@@ -5,9 +5,12 @@
   "type": "module",
   "scripts": {
     "start": "tsx src/app.ts",
-    "dev": "tsx watch src/app.ts"
+    "dev": "tsx watch src/app.ts",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.92.0",
     "@slack/bolt": "^4.7.0",
     "@supabase/supabase-js": "^2.49.1",
     "dotenv": "^16.4.0",
@@ -15,7 +18,8 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
-    "@types/node": "^20",
-    "typescript": "^5"
+    "@types/node": "^20.19.39",
+    "typescript": "^5",
+    "vitest": "^2.1.9"
   }
 }
