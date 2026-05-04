@@ -6,21 +6,20 @@ FROM node:20-slim
 
 WORKDIR /app
 
-# Copy both bolt/ and src/lib/ (shared agent code)
-COPY bolt/package.json bolt/package-lock.json* ./bolt/
+# Install deps at /app so both /app/bolt/src/** and /app/src/lib/**
+# can resolve them via Node's upward node_modules lookup.
+COPY bolt/package.json bolt/package-lock.json ./
+RUN npm ci --omit=dev
+
+# Shared agent code (imported by bolt handlers)
 COPY src/lib/ ./src/lib/
 
-# Install bolt dependencies
-WORKDIR /app/bolt
-RUN npm install --production
-
-# Copy bolt source
-COPY bolt/src/ ./src/
-COPY bolt/tsconfig.json ./
+# Bolt app source
+COPY bolt/src/ ./bolt/src/
+COPY bolt/tsconfig.json ./bolt/
 
 WORKDIR /app/bolt
 
-# Health check — tsx runs the process, Railway monitors it
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
   CMD node -e "process.exit(0)"
 
