@@ -30,6 +30,16 @@ registerMessageHandlers(app)
 registerCommandHandlers(app)
 registerInteractionHandlers(app)
 
+// ─── Resilience: don't crash on transient API errors ───────
+// A single failed Slack API call (rate limit, transient outage, etc.)
+// shouldn't take the whole bot down. Log and keep running.
+process.on('unhandledRejection', (reason) => {
+  console.error('[Bolt] Unhandled rejection:', reason)
+})
+process.on('uncaughtException', (err) => {
+  console.error('[Bolt] Uncaught exception:', err)
+})
+
 // ─── Start ─────────────────────────────────────────────────
 
 ;(async () => {
