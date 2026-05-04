@@ -157,9 +157,16 @@ async function handleConversationalMessage(args: HandlerArgs): Promise<void> {
     })
   } catch (err: any) {
     console.error('[Bolt] orchestrator error:', err)
+    // During debug: surface the reason in Slack so we don't have to grep logs.
+    // Revert to friendly message once stable.
+    const reason =
+      err?.error?.error?.message ||
+      err?.error?.message ||
+      err?.message ||
+      String(err)
     await app.client.chat.postMessage({
       channel: channelId,
-      text: "I'm having trouble thinking clearly — try again in a sec?",
+      text: `I'm having trouble thinking clearly — \`${reason.slice(0, 300)}\``,
     })
   } finally {
     await clearThinking(app, channelId, threadTs)
