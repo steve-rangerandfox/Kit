@@ -7,7 +7,7 @@
  */
 
 import 'dotenv/config'
-import { App, Assistant, LogLevel } from '@slack/bolt'
+import { App, LogLevel } from '@slack/bolt'
 import { registerMessageHandlers } from './handlers/messages'
 import { registerCommandHandlers } from './handlers/commands'
 import { registerInteractionHandlers } from './handlers/interactions'
@@ -21,23 +21,9 @@ const app = new App({
   logLevel: LogLevel.INFO,
 })
 
-// ─── Register Assistant (for typing indicators) ────────────
-// We don't use Bolt's assistant message-handler convention because our
-// orchestrator is the message handler. But registering the Assistant
-// middleware tells Slack our app supports `assistant.threads.setStatus`.
-
-const assistant = new Assistant({
-  threadStarted: async () => {
-    // Triggered when a user opens an Assistant thread with Kit. We could
-    // greet here, but our orchestrator handles greetings via app_mention
-    // and message events, so we no-op.
-  },
-  userMessage: async () => {
-    // No-op: messages are handled by our app.event('message') handler.
-  },
-})
-
-app.assistant(assistant)
+// Note: Slack Assistant capability (for native typing indicators) is
+// disabled until "Agents & AI Apps" is enabled in the Slack app config.
+// status.ts no-ops gracefully when the capability isn't registered.
 
 // ─── Register Handlers ─────────────────────────────────────
 
