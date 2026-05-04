@@ -84,31 +84,15 @@ export function buildNewProjectModal(channelId: string) {
       },
       { type: 'divider' },
       {
-        type: 'input',
-        block_id: 'services',
-        label: { type: 'plain_text', text: 'Services to Provision' },
-        element: {
-          type: 'checkboxes',
-          action_id: 'val',
-          initial_options: [
-            { text: { type: 'plain_text', text: 'Dropbox' }, value: 'dropbox' },
-            { text: { type: 'plain_text', text: 'Frame.io' }, value: 'frameio' },
-            { text: { type: 'plain_text', text: 'Canva' }, value: 'canva' },
-            { text: { type: 'plain_text', text: 'OneDrive' }, value: 'onedrive' },
-            { text: { type: 'plain_text', text: 'Clockify' }, value: 'clockify' },
-            { text: { type: 'plain_text', text: 'FigJam' }, value: 'figma' },
-            { text: { type: 'plain_text', text: 'Slack Channel' }, value: 'slack' },
-          ],
-          options: [
-            { text: { type: 'plain_text', text: 'Dropbox' }, value: 'dropbox' },
-            { text: { type: 'plain_text', text: 'Frame.io' }, value: 'frameio' },
-            { text: { type: 'plain_text', text: 'Canva' }, value: 'canva' },
-            { text: { type: 'plain_text', text: 'OneDrive' }, value: 'onedrive' },
-            { text: { type: 'plain_text', text: 'Clockify' }, value: 'clockify' },
-            { text: { type: 'plain_text', text: 'FigJam' }, value: 'figma' },
-            { text: { type: 'plain_text', text: 'Slack Channel' }, value: 'slack' },
-          ],
-        },
+        type: 'context',
+        elements: [
+          {
+            type: 'mrkdwn',
+            text:
+              ':sparkles: *Will provision everything available* — Harvest project, Dropbox folder, Frame.io project, and a dedicated Slack channel. ' +
+              'Hit *Create Project* to confirm.',
+          },
+        ],
       },
     ],
   }

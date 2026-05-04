@@ -13,7 +13,10 @@
 
 import type { App } from '@slack/bolt'
 import { createAdminClient } from '../../../src/lib/supabase/admin'
-import { dispatch } from '../../../src/lib/inngest/agents/registry'
+import {
+  dispatch,
+  getAvailableAgents,
+} from '../../../src/lib/inngest/agents/registry'
 import { buildSummaryBlocks } from '../../../src/lib/provisioner/slack-summary'
 import type { ServiceKey } from '../../../src/lib/provisioner/types'
 
@@ -28,7 +31,8 @@ export function registerInteractionHandlers(app: App) {
     const channelId = meta.channel_id || ''
     const values = view.state?.values || {}
 
-    // Extract form values
+    // Extract form values. Services are no longer user-selectable — the modal
+    // confirms intent and we provision every available agent that supports it.
     const form = {
       projectNumber: values.project_number?.val?.value || '',
       projectName: values.project_name?.val?.value || '',
@@ -39,7 +43,7 @@ export function registerInteractionHandlers(app: App) {
       startDate: values.start_date?.val?.selected_date || undefined,
       deadline: values.deadline?.val?.selected_date || undefined,
       description: values.description?.val?.value || undefined,
-      selectedServices: extractServices(values),
+      selectedServices: getProvisionableServices(),
     }
 
     // Resolve workspace
@@ -183,13 +187,15 @@ export function registerInteractionHandlers(app: App) {
 
 // ─── Helpers ────────────────────────────────────────────────
 
-function extractServices(values: any): ServiceKey[] {
-  const selected = values.services?.val?.selected_options
-  if (!Array.isArray(selected) || selected.length === 0) {
-    // Default: all services
-    return ['dropbox', 'frameio', 'slack'] as ServiceKey[]
-  }
-  return selected.map((opt: any) => opt.value as ServiceKey)
+/**
+ * Every registered agent (with required env vars present) that declares a
+ * `provision` capability. Single source of truth — adding a new agent with
+ * provision support automatically extends the new-project flow.
+ */
+function getProvisionableServices(): ServiceKey[] {
+  return getAvailableAgents()
+    .filter((agent) => agent.capabilities.some((c) => c.action === 'provision'))
+    .map((agent) => agent.id as ServiceKey)
 }
 
 async function resolveWorkspaceId(teamId: string): Promise<string> {
