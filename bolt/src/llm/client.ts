@@ -24,5 +24,5 @@ export const anthropic = new Anthropic({
 export const LLM_TIMEOUT_MS = 30_000
 
 /** Models — pinned IDs per design doc */
-export const ORCHESTRATOR_MODEL = 'claude-sonnet-4-6' as const
+export const ORCHESTRATOR_MODEL = 'claude-opus-4-7' as const
 export const SPECIALIST_MODEL = 'claude-haiku-4-5-20251001' as const
