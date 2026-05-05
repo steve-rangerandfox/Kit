@@ -8,8 +8,8 @@
 
 import 'dotenv/config'
 import http from 'node:http'
-import { App, LogLevel } from '@slack/bolt'
-import { registerMessageHandlers } from './handlers/messages'
+import { App, Assistant, LogLevel } from '@slack/bolt'
+import { registerMessageHandlers, handleConversationalMessage } from './handlers/messages'
 import { registerCommandHandlers } from './handlers/commands'
 import { registerInteractionHandlers } from './handlers/interactions'
 
@@ -22,9 +22,39 @@ const app = new App({
   logLevel: LogLevel.INFO,
 })
 
-// Note: Slack Assistant capability (for native typing indicators) is
-// disabled until "Agents & AI Apps" is enabled in the Slack app config.
-// status.ts no-ops gracefully when the capability isn't registered.
+// ─── Register Assistant ────────────────────────────────────
+// "Agents & AI Apps" is enabled in the Slack workspace, so DMs to Kit
+// arrive via the Assistant flow rather than plain message events. We
+// route those through the same orchestrator as regular messages.
+
+const assistant = new Assistant({
+  threadStarted: async ({ event, say }) => {
+    // Optional: post a brief greeting when a user opens an Assistant thread.
+    // Keep it short so we don't double-greet on the first user message.
+    try {
+      await say({ text: 'Hey! What can I help with?' })
+    } catch {
+      /* non-fatal */
+    }
+  },
+  userMessage: async ({ message, client }) => {
+    const m = message as any
+    if (m.bot_id || m.subtype) return
+
+    await handleConversationalMessage({
+      app,
+      channelId: m.channel,
+      userId: m.user,
+      teamId: m.team || '',
+      messageText: (m.text || '').trim(),
+      messageTs: m.ts,
+      threadTs: m.thread_ts || m.ts,
+      isDirectMention: false,
+    })
+  },
+})
+
+app.assistant(assistant)
 
 // ─── Register Handlers ─────────────────────────────────────
 

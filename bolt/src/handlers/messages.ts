@@ -83,7 +83,7 @@ export function registerMessageHandlers(app: App) {
 }
 
 // ─── Shared handler ────────────────────────────────────────
-interface HandlerArgs {
+export interface HandlerArgs {
   app: App
   channelId: string
   userId: string
@@ -94,7 +94,7 @@ interface HandlerArgs {
   isDirectMention: boolean
 }
 
-async function handleConversationalMessage(args: HandlerArgs): Promise<void> {
+export async function handleConversationalMessage(args: HandlerArgs): Promise<void> {
   const { app, channelId, userId, teamId, messageText, messageTs, threadTs } = args
 
   if (!messageText) {
