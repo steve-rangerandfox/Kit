@@ -114,19 +114,34 @@ export function hasBusinessContextSignal(opts: {
   return false
 }
 
+// Recruiting / interview context. Deliberately NARROW — only unambiguous
+// recruiting terms. A recruiting call can come from a real corporate domain, so
+// this must veto the positive signals for the general fallback (but never the
+// role=bizdev override). Not extended to vendor/accountant/personal — those are
+// ambiguous and out of scope.
+const RECRUITING_TITLE_PATTERNS: RegExp[] = [
+  /\binterview\b/, /\brecruiter\b/, /\brecruiting\b/,
+]
+
+/** True if the title is a recruiting/interview conversation. Pure — unit-tested. */
+export function hasRecruitingContext(title: string): boolean {
+  const t = (title || '').toLowerCase()
+  return RECRUITING_TITLE_PATTERNS.some((re) => re.test(t))
+}
+
 /**
  * Decide whether a meeting with NO active-project match should still be briefed
  * as business development. Pure — unit-tested.
  *
- * Triggers:
- *   1. a bizdev-role staffer is on the invite (original behavior, preserved), OR
- *   2. FALLBACK: at least one matched internal staff attendee AND at least one
- *      external attendee AND at least one positive business-context signal
- *      (non-generic company domain, a company candidate in the title, or
- *      explicit bizdev language). Topology alone is insufficient, so recruiter /
- *      vendor / interview / personal calls stay skipped.
- *
- * Otherwise the meeting stays a silent skip.
+ * Precedence (evaluated in this order):
+ *   1. role=bizdev override — a bizdev-role staffer on the invite is always
+ *      bizdev (recruiting exclusion does NOT apply here).
+ *   2. Topology required — otherwise, need ≥1 matched internal staff attendee
+ *      AND ≥1 external attendee; else skip.
+ *   3. Recruiting exclusion — an interview/recruiter/recruiting title is skipped
+ *      even if it has a corporate domain or other positive signal.
+ *   4. Positive business-context signal — non-generic company domain, a company
+ *      candidate in the title, or explicit bizdev language; else skip.
  */
 export function shouldBriefAsBizdev(opts: {
   hasBizdevRoleAttendee: boolean
@@ -135,11 +150,14 @@ export function shouldBriefAsBizdev(opts: {
   title: string
   externalEmails: string[]
 }): boolean {
+  // 1. role=bizdev override.
   if (opts.hasBizdevRoleAttendee) return true
-  if (opts.internalMatchCount >= 1 && opts.externalCount >= 1) {
-    return hasBusinessContextSignal({ title: opts.title, externalEmails: opts.externalEmails })
-  }
-  return false
+  // 2. Topology required.
+  if (!(opts.internalMatchCount >= 1 && opts.externalCount >= 1)) return false
+  // 3. Recruiting exclusion — applied BEFORE positive signals are accepted.
+  if (hasRecruitingContext(opts.title)) return false
+  // 4. Positive business-context signal.
+  return hasBusinessContextSignal({ title: opts.title, externalEmails: opts.externalEmails })
 }
 
 /** Builds the lowercased (email + aliases) set for a set of staff rows. Pure. */

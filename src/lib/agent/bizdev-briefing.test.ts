@@ -30,6 +30,7 @@ import {
   hasBusinessContextSignal,
   companyFromTitle,
   hasBizdevLanguage,
+  hasRecruitingContext,
 } from './bizdev-briefing'
 import { matchAttendeesToStaff } from './briefing-composer'
 
@@ -183,6 +184,14 @@ describe('business-context signals', () => {
     assert.equal(hasBizdevLanguage('Doctor appointment'), false)
     assert.equal(hasBizdevLanguage('Lunch'), false)
   })
+  it('hasRecruitingContext matches interview/recruiter/recruiting only', () => {
+    assert.equal(hasRecruitingContext('Candidate interview'), true)
+    assert.equal(hasRecruitingContext('Interview: senior editor'), true)
+    assert.equal(hasRecruitingContext('Recruiter call'), true)
+    assert.equal(hasRecruitingContext('Recruiting sync'), true)
+    assert.equal(hasRecruitingContext('Discovery'), false)
+    assert.equal(hasRecruitingContext('R&F + Steve (Kit Inc)'), false)
+  })
   it('hasBusinessContextSignal: company domain OR title company OR bizdev language', () => {
     assert.equal(hasBusinessContextSignal({ title: 'Sync', externalEmails: ['a@acme.co'] }), true) // domain
     assert.equal(hasBusinessContextSignal({ title: 'Chat (Acme)', externalEmails: ['a@gmail.com'] }), true) // title company
@@ -222,6 +231,20 @@ describe('shouldBriefAsBizdev (no-project fallback: topology + business signal)'
 
   it('internal + external company domain → bizdev', () => {
     assert.equal(decide('Sync', [{ email: 'steve@rangerandfox.tv' }, { email: 'buyer@acme.co' }]), true)
+  })
+  it('internal + buyer@acme.com + "Discovery" → bizdev', () => {
+    assert.equal(decide('Discovery', [{ email: 'steve@rangerandfox.tv' }, { email: 'buyer@acme.com' }]), true)
+  })
+
+  // ── Recruiting exclusion: veto positive signals for the general fallback ──
+  it('internal + applicant@company.com + "Candidate interview" → skipped (corp domain vetoed)', () => {
+    assert.equal(decide('Candidate interview', [{ email: 'steve@rangerandfox.tv' }, { email: 'applicant@company.com' }]), false)
+  })
+  it('internal + recruiter@agency.com + "Recruiter call" → skipped', () => {
+    assert.equal(decide('Recruiter call', [{ email: 'steve@rangerandfox.tv' }, { email: 'recruiter@agency.com' }]), false)
+  })
+  it('role=bizdev attendee + recruiting title remains bizdev (override wins)', () => {
+    assert.equal(decide('Candidate interview', [{ email: 'steve@rangerandfox.tv' }, { email: 'applicant@company.com' }], true), true)
   })
 
   // ── Negatives: topology present but NO business signal → stay skipped ──
