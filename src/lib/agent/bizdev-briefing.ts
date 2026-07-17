@@ -60,6 +60,29 @@ export function hasBizdevAttendee(
   return attendeeEmails.some((e) => bizdevEmails.has((e || '').trim().toLowerCase()))
 }
 
+/**
+ * Decide whether a meeting with NO active-project match should still be briefed
+ * as business development. Pure — unit-tested.
+ *
+ * Two triggers (either suffices):
+ *   1. a bizdev-role staffer is on the invite (original behavior), OR
+ *   2. FALLBACK: at least one matched internal staff attendee AND at least one
+ *      external attendee — an R&F person meeting an outside contact. This is the
+ *      general bizdev case (e.g. a founder + a prospect) that the role-only gate
+ *      missed, sending real bizdev calls to 'skipped'.
+ *
+ * Otherwise the meeting stays a silent skip (internal-only, or external-only
+ * with no matched R&F attendee).
+ */
+export function shouldBriefAsBizdev(opts: {
+  hasBizdevRoleAttendee: boolean
+  internalMatchCount: number
+  externalCount: number
+}): boolean {
+  if (opts.hasBizdevRoleAttendee) return true
+  return opts.internalMatchCount >= 1 && opts.externalCount >= 1
+}
+
 /** Builds the lowercased (email + aliases) set for a set of staff rows. Pure. */
 export function buildStaffEmailSet(
   staff: { email: string | null; email_aliases?: string[] | null }[],

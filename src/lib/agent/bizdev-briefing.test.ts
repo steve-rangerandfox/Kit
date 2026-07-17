@@ -26,6 +26,7 @@ import {
   internalHistoryToEvidence,
   researchAttendee,
   retrieveInternalHistory,
+  shouldBriefAsBizdev,
 } from './bizdev-briefing'
 import { matchAttendeesToStaff } from './briefing-composer'
 
@@ -163,6 +164,45 @@ describe('renderAttendeeEvidence / buildBizdevBriefingText (no raw prose)', () =
     assert.ok(lines.some((l) => l.includes('Ryan Dolinsky')))
     assert.ok(lines.some((l) => l.includes('Founder of Oshi')))
     assert.ok(lines.some((l) => l.includes('Confidence: resolved')))
+  })
+})
+
+describe('shouldBriefAsBizdev (no-project fallback decision tree)', () => {
+  it('a bizdev-role attendee always triggers bizdev', () => {
+    assert.equal(shouldBriefAsBizdev({ hasBizdevRoleAttendee: true, internalMatchCount: 0, externalCount: 0 }), true)
+  })
+  it('FALLBACK: matched internal staffer + external attendee triggers bizdev', () => {
+    assert.equal(shouldBriefAsBizdev({ hasBizdevRoleAttendee: false, internalMatchCount: 1, externalCount: 1 }), true)
+  })
+  it('internal-only (no external) does NOT trigger bizdev', () => {
+    assert.equal(shouldBriefAsBizdev({ hasBizdevRoleAttendee: false, internalMatchCount: 2, externalCount: 0 }), false)
+  })
+  it('external-only (no matched internal) does NOT trigger bizdev', () => {
+    assert.equal(shouldBriefAsBizdev({ hasBizdevRoleAttendee: false, internalMatchCount: 0, externalCount: 3 }), false)
+  })
+  it('no attendees does NOT trigger bizdev', () => {
+    assert.equal(shouldBriefAsBizdev({ hasBizdevRoleAttendee: false, internalMatchCount: 0, externalCount: 0 }), false)
+  })
+
+  it('REPORTED CASE: "R&F + Steve (Kit Inc)" (internal staffer + external) classifies bizdev', () => {
+    // steve is a matched internal staffer (active, has a Slack id) but NOT a
+    // bizdev-role staffer; stevepanicara@gmail.com is external.
+    const staff = [
+      { id: 's-steve', email: 'steve@rangerandfox.tv', slack_user_id: 'U_STEVE', full_name: 'Steve', is_active: true },
+    ]
+    const attendees = [{ email: 'steve@rangerandfox.tv' }, { email: 'stevepanicara@gmail.com' }]
+    const internalMatches = matchAttendeesToStaff(attendees, staff)
+    const externals = filterExternalAttendees(attendees, buildStaffEmailSet(staff))
+    assert.equal(internalMatches.length, 1)
+    assert.equal(externals.length, 1)
+    assert.equal(
+      shouldBriefAsBizdev({
+        hasBizdevRoleAttendee: false, // steve is not role=bizdev
+        internalMatchCount: internalMatches.length,
+        externalCount: externals.length,
+      }),
+      true,
+    )
   })
 })
 
