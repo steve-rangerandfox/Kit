@@ -60,27 +60,86 @@ export function hasBizdevAttendee(
   return attendeeEmails.some((e) => bizdevEmails.has((e || '').trim().toLowerCase()))
 }
 
+// Parenthetical values that are NOT a company (meeting-logistics noise). Kept
+// small; anything else in "(...)" is treated as a company candidate.
+const TITLE_PAREN_STOPWORDS = new Set([
+  'zoom', 'meet', 'google meet', 'teams', 'internal', 'tentative', 'rescheduled',
+  'canceled', 'cancelled', 'remote', 'virtual', 'hold', 'on hold', 'wip', '1:1',
+  'no agenda', 'recurring', 'optional', 'tbd',
+])
+
+/**
+ * Company candidate from a meeting title's parenthetical, e.g.
+ * "R&F + Steve (Kit Inc)" → "Kit Inc". Returns null when the parenthetical is
+ * absent or is meeting-logistics noise. Pure — unit-tested.
+ */
+export function companyFromTitle(title: string): string | null {
+  const m = (title || '').match(/\(([^)]+)\)/)
+  if (!m) return null
+  const inner = m[1].trim()
+  if (inner.length < 2 || !/[a-zA-Z]/.test(inner)) return null
+  if (TITLE_PAREN_STOPWORDS.has(inner.toLowerCase())) return null
+  return inner
+}
+
+// Explicit business-development / project-inquiry language. Deliberately does
+// NOT include interview/recruiting/personal terms.
+const BIZDEV_TITLE_PATTERNS: RegExp[] = [
+  /\bintro(duction)?\b/, /\bbiz\s?dev\b/, /\bbusiness development\b/,
+  /\bproposal\b/, /\bpitch\b/, /\bprospect\b/, /\bdiscovery\b/,
+  /\bkick[\s-]?off\b/, /\bsow\b/, /\bstatement of work\b/, /\bscope\b/,
+  /\bnew project\b/, /\b(project )?inquiry\b/, /\brfp\b/, /\bpartnership\b/,
+]
+
+/** True if the title uses explicit bizdev / project-inquiry language. Pure. */
+export function hasBizdevLanguage(title: string): boolean {
+  const t = (title || '').toLowerCase()
+  return BIZDEV_TITLE_PATTERNS.some((re) => re.test(t))
+}
+
+/**
+ * At least one POSITIVE business-context signal, using the smallest existing
+ * evidence mechanisms. Attendee topology alone is not enough — this is what
+ * separates a real bizdev call from a recruiter/vendor/personal call. Pure —
+ * unit-tested. Consumer domains (gmail/outlook/…) are NOT company evidence
+ * (parseCompanyFromDomain returns null for them).
+ */
+export function hasBusinessContextSignal(opts: {
+  title: string
+  externalEmails: string[]
+}): boolean {
+  if ((opts.externalEmails || []).some((e) => parseCompanyFromDomain(e) !== null)) return true
+  if (companyFromTitle(opts.title)) return true
+  if (hasBizdevLanguage(opts.title)) return true
+  return false
+}
+
 /**
  * Decide whether a meeting with NO active-project match should still be briefed
  * as business development. Pure — unit-tested.
  *
- * Two triggers (either suffices):
- *   1. a bizdev-role staffer is on the invite (original behavior), OR
+ * Triggers:
+ *   1. a bizdev-role staffer is on the invite (original behavior, preserved), OR
  *   2. FALLBACK: at least one matched internal staff attendee AND at least one
- *      external attendee — an R&F person meeting an outside contact. This is the
- *      general bizdev case (e.g. a founder + a prospect) that the role-only gate
- *      missed, sending real bizdev calls to 'skipped'.
+ *      external attendee AND at least one positive business-context signal
+ *      (non-generic company domain, a company candidate in the title, or
+ *      explicit bizdev language). Topology alone is insufficient, so recruiter /
+ *      vendor / interview / personal calls stay skipped.
  *
- * Otherwise the meeting stays a silent skip (internal-only, or external-only
- * with no matched R&F attendee).
+ * Otherwise the meeting stays a silent skip.
  */
 export function shouldBriefAsBizdev(opts: {
   hasBizdevRoleAttendee: boolean
   internalMatchCount: number
   externalCount: number
+  title: string
+  externalEmails: string[]
 }): boolean {
   if (opts.hasBizdevRoleAttendee) return true
-  return opts.internalMatchCount >= 1 && opts.externalCount >= 1
+  if (opts.internalMatchCount >= 1 && opts.externalCount >= 1) {
+    return hasBusinessContextSignal({ title: opts.title, externalEmails: opts.externalEmails })
+  }
+  return false
 }
 
 /** Builds the lowercased (email + aliases) set for a set of staff rows. Pure. */

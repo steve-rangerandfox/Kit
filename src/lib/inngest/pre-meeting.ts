@@ -223,6 +223,8 @@ export const preMeetingScan = inngest.createFunction(
           ),
           internalMatchCount: internalMatches.length,
           externalCount: externals.length,
+          title: ev.summary || '',
+          externalEmails: externals.map((a: any) => a.email),
         })
         if (!isBizdev) {
           rows.push({ ...baseRow, status: 'skipped', error: cls.reasoning })

@@ -27,6 +27,9 @@ import {
   researchAttendee,
   retrieveInternalHistory,
   shouldBriefAsBizdev,
+  hasBusinessContextSignal,
+  companyFromTitle,
+  hasBizdevLanguage,
 } from './bizdev-briefing'
 import { matchAttendeesToStaff } from './briefing-composer'
 
@@ -167,42 +170,75 @@ describe('renderAttendeeEvidence / buildBizdevBriefingText (no raw prose)', () =
   })
 })
 
-describe('shouldBriefAsBizdev (no-project fallback decision tree)', () => {
-  it('a bizdev-role attendee always triggers bizdev', () => {
-    assert.equal(shouldBriefAsBizdev({ hasBizdevRoleAttendee: true, internalMatchCount: 0, externalCount: 0 }), true)
+describe('business-context signals', () => {
+  it('companyFromTitle extracts a parenthetical company, ignores logistics noise', () => {
+    assert.equal(companyFromTitle('R&F + Steve (Kit Inc)'), 'Kit Inc')
+    assert.equal(companyFromTitle('Standup (Zoom)'), null)
+    assert.equal(companyFromTitle('Lunch'), null)
   })
-  it('FALLBACK: matched internal staffer + external attendee triggers bizdev', () => {
-    assert.equal(shouldBriefAsBizdev({ hasBizdevRoleAttendee: false, internalMatchCount: 1, externalCount: 1 }), true)
+  it('hasBizdevLanguage matches bizdev/inquiry terms, not interview/personal', () => {
+    assert.equal(hasBizdevLanguage('Intro call with Acme'), true)
+    assert.equal(hasBizdevLanguage('New project inquiry'), true)
+    assert.equal(hasBizdevLanguage('Candidate interview'), false)
+    assert.equal(hasBizdevLanguage('Doctor appointment'), false)
+    assert.equal(hasBizdevLanguage('Lunch'), false)
   })
-  it('internal-only (no external) does NOT trigger bizdev', () => {
-    assert.equal(shouldBriefAsBizdev({ hasBizdevRoleAttendee: false, internalMatchCount: 2, externalCount: 0 }), false)
+  it('hasBusinessContextSignal: company domain OR title company OR bizdev language', () => {
+    assert.equal(hasBusinessContextSignal({ title: 'Sync', externalEmails: ['a@acme.co'] }), true) // domain
+    assert.equal(hasBusinessContextSignal({ title: 'Chat (Acme)', externalEmails: ['a@gmail.com'] }), true) // title company
+    assert.equal(hasBusinessContextSignal({ title: 'Intro', externalEmails: ['a@gmail.com'] }), true) // language
+    assert.equal(hasBusinessContextSignal({ title: 'Lunch', externalEmails: ['a@gmail.com'] }), false) // none
   })
-  it('external-only (no matched internal) does NOT trigger bizdev', () => {
-    assert.equal(shouldBriefAsBizdev({ hasBizdevRoleAttendee: false, internalMatchCount: 0, externalCount: 3 }), false)
-  })
-  it('no attendees does NOT trigger bizdev', () => {
-    assert.equal(shouldBriefAsBizdev({ hasBizdevRoleAttendee: false, internalMatchCount: 0, externalCount: 0 }), false)
-  })
+})
 
-  it('REPORTED CASE: "R&F + Steve (Kit Inc)" (internal staffer + external) classifies bizdev', () => {
-    // steve is a matched internal staffer (active, has a Slack id) but NOT a
-    // bizdev-role staffer; stevepanicara@gmail.com is external.
-    const staff = [
-      { id: 's-steve', email: 'steve@rangerandfox.tv', slack_user_id: 'U_STEVE', full_name: 'Steve', is_active: true },
-    ]
-    const attendees = [{ email: 'steve@rangerandfox.tv' }, { email: 'stevepanicara@gmail.com' }]
+describe('shouldBriefAsBizdev (no-project fallback: topology + business signal)', () => {
+  const staff = [
+    { id: 's-steve', email: 'steve@rangerandfox.tv', slack_user_id: 'U_STEVE', full_name: 'Steve', is_active: true },
+  ]
+  // Compute the real topology for a set of attendees against the staff directory.
+  function topology(attendees: { email: string }[]) {
     const internalMatches = matchAttendeesToStaff(attendees, staff)
     const externals = filterExternalAttendees(attendees, buildStaffEmailSet(staff))
-    assert.equal(internalMatches.length, 1)
-    assert.equal(externals.length, 1)
-    assert.equal(
-      shouldBriefAsBizdev({
-        hasBizdevRoleAttendee: false, // steve is not role=bizdev
-        internalMatchCount: internalMatches.length,
-        externalCount: externals.length,
-      }),
-      true,
-    )
+    return {
+      internalMatchCount: internalMatches.length,
+      externalCount: externals.length,
+      externalEmails: externals.map((e) => e.email),
+    }
+  }
+  const decide = (title: string, attendees: { email: string }[], hasBizdevRoleAttendee = false) =>
+    shouldBriefAsBizdev({ hasBizdevRoleAttendee, title, ...topology(attendees) })
+
+  it('a bizdev-role attendee always triggers bizdev (no signal needed)', () => {
+    assert.equal(decide('Lunch', [{ email: 'steve@rangerandfox.tv' }, { email: 'x@gmail.com' }], true), true)
+  })
+
+  it('REPORTED CASE: "R&F + Steve (Kit Inc)" → bizdev because the title supplies a company candidate', () => {
+    const t = topology([{ email: 'steve@rangerandfox.tv' }, { email: 'stevepanicara@gmail.com' }])
+    assert.equal(t.internalMatchCount, 1)
+    assert.equal(t.externalCount, 1)
+    assert.equal(companyFromTitle('R&F + Steve (Kit Inc)'), 'Kit Inc') // the reason
+    assert.equal(decide('R&F + Steve (Kit Inc)', [{ email: 'steve@rangerandfox.tv' }, { email: 'stevepanicara@gmail.com' }]), true)
+  })
+
+  it('internal + external company domain → bizdev', () => {
+    assert.equal(decide('Sync', [{ email: 'steve@rangerandfox.tv' }, { email: 'buyer@acme.co' }]), true)
+  })
+
+  // ── Negatives: topology present but NO business signal → stay skipped ──
+  it('internal + external Gmail, title "Lunch" → skipped', () => {
+    assert.equal(decide('Lunch', [{ email: 'steve@rangerandfox.tv' }, { email: 'friend@gmail.com' }]), false)
+  })
+  it('internal + external Gmail, title "Doctor appointment" → skipped', () => {
+    assert.equal(decide('Doctor appointment', [{ email: 'steve@rangerandfox.tv' }, { email: 'doc@gmail.com' }]), false)
+  })
+  it('internal + external, title "Candidate interview" → skipped', () => {
+    assert.equal(decide('Candidate interview', [{ email: 'steve@rangerandfox.tv' }, { email: 'applicant@gmail.com' }]), false)
+  })
+  it('internal-only → skipped', () => {
+    assert.equal(decide('Intro (Acme)', [{ email: 'steve@rangerandfox.tv' }]), false)
+  })
+  it('external-only → skipped', () => {
+    assert.equal(decide('Intro (Acme)', [{ email: 'buyer@acme.co' }]), false)
   })
 })
 
