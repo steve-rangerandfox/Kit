@@ -89,6 +89,9 @@ export async function handlePilotCommand(opts: {
   const tokens = (args || '').trim().split(/\s+/)
   const sub = (tokens.shift() || 'help').toLowerCase()
   const deps = defaultPilotDeps()
+  // Single authenticated actor threaded into every service call; the service
+  // derives the authoritative workspace from the pilot/project record.
+  const actor = { actingUserId: ctx.slackUserId, workspaceId: ctx.workspaceId }
 
   try {
     switch (sub) {
@@ -100,12 +103,7 @@ export async function handlePilotCommand(opts: {
         const projectId = tokens.shift()
         if (!projectId) return void (await reply('Usage: `/kit pilot create <projectId> :: <title>`'))
         const title = splitFields(tokens.join(' '))[0] || null
-        const res = await createVisualDevPilot(deps, {
-          projectId,
-          workspaceId: ctx.workspaceId,
-          title,
-          createdBy: ctx.slackUserId,
-        })
+        const res = await createVisualDevPilot(deps, { projectId, title, actor })
         if (!res.ok) return void (await reply(`Couldn't create pilot: ${res.reason}`))
         await reply(`✅ Pilot created: \`${res.value.id}\``)
         return
@@ -115,7 +113,7 @@ export async function handlePilotCommand(opts: {
         const pilotId = tokens.shift()
         const text = splitFields(tokens.join(' '))[0]
         if (!pilotId || !text) return void (await reply('Usage: `/kit pilot visual-language <pilotId> :: <text>`'))
-        const res = await setVisualLanguage(deps, { pilotId, text })
+        const res = await setVisualLanguage(deps, { pilotId, text, actor })
         await reply(res.ok ? '✅ Visual language recorded.' : `Failed: ${res.reason}`)
         return
       }
@@ -130,7 +128,7 @@ export async function handlePilotCommand(opts: {
           return void (await reply('Usage: `/kit pilot ref <pilotId> <pinterest|figma|styleframe|other> <url|-> :: <label>`'))
         }
         const url = urlTok && urlTok !== '-' ? urlTok : null
-        const res = await addReference(deps, { pilotId, refType, url, label, author: ctx.slackUserId })
+        const res = await addReference(deps, { pilotId, refType, url, label, actor })
         await reply(res.ok ? `✅ Reference added (${refType}).` : `Failed: ${res.reason}`)
         return
       }
@@ -146,7 +144,7 @@ export async function handlePilotCommand(opts: {
           externalRef,
           label,
           kind: 'output',
-          author: ctx.slackUserId,
+          actor,
         })
         await reply(res.ok ? `✅ Generation recorded: \`${res.value.id}\` (pending acceptance).` : `Failed: ${res.reason}`)
         return
@@ -159,8 +157,7 @@ export async function handlePilotCommand(opts: {
         const res = await decideGenerationAcceptance(deps, {
           generationId,
           accept: sub === 'accept',
-          actingUserId: ctx.slackUserId,
-          workspaceId: ctx.workspaceId,
+          actor,
         })
         await reply(res.ok ? `✅ Output ${sub}ed.` : `Failed: ${res.reason}`)
         return
@@ -179,7 +176,7 @@ export async function handlePilotCommand(opts: {
           packageName,
           mapType,
           purpose,
-          author: ctx.slackUserId,
+          actor,
         })
         await reply(res.ok ? `✅ Map recorded (${mapType} in ${packageName}).` : `Failed: ${res.reason}`)
         return
@@ -200,7 +197,7 @@ export async function handlePilotCommand(opts: {
           passed: passTok !== 'fail',
           evidenceRef,
           subject,
-          author: ctx.slackUserId,
+          actor,
         })
         await reply(res.ok ? `✅ ${tool} validation recorded.` : `Failed: ${res.reason}`)
         return
@@ -238,7 +235,7 @@ export async function handlePilotCommand(opts: {
           valueNumeric,
           valueText,
           unit,
-          author: ctx.slackUserId,
+          actor,
         })
         await reply(res.ok ? `✅ Evidence recorded (${category}).` : `Failed: ${res.reason}`)
         return
@@ -251,13 +248,7 @@ export async function handlePilotCommand(opts: {
         if (!pilotId || !recommendation) {
           return void (await reply('Usage: `/kit pilot finalize <pilotId> <adopt|revise|repeat|discontinue> :: <rationale>`'))
         }
-        const res = await finalizeRecommendation(deps, {
-          pilotId,
-          recommendation,
-          rationale,
-          actingUserId: ctx.slackUserId,
-          workspaceId: ctx.workspaceId,
-        })
+        const res = await finalizeRecommendation(deps, { pilotId, recommendation, rationale, actor })
         if (!res.ok) {
           const missing = res.finalize && !res.finalize.ok && res.finalize.completeness
             ? '\nOutstanding:\n' + res.finalize.completeness.missing.map((m) => `• ${m.detail}`).join('\n')
@@ -265,7 +256,7 @@ export async function handlePilotCommand(opts: {
           return void (await reply(`Cannot finalize: ${res.reason}${missing}`))
         }
         // Refresh the read-only Canvas so the recommendation is projected.
-        await refreshPilotCanvas(deps, { pilotId, channelId }).catch(() => {})
+        await refreshPilotCanvas(deps, { pilotId, channelId, actor }).catch(() => {})
         await reply(`✅ Pilot finalized: *${recommendation}*.`)
         return
       }
@@ -273,7 +264,7 @@ export async function handlePilotCommand(opts: {
       case 'show': {
         const pilotId = tokens.shift()
         if (!pilotId) return void (await reply('Usage: `/kit pilot show <pilotId>`'))
-        const res = await refreshPilotCanvas(deps, { pilotId, channelId })
+        const res = await refreshPilotCanvas(deps, { pilotId, channelId, actor })
         await reply(
           res.ok
             ? `📋 Pilot canvas refreshed${res.value.canvasUrl ? `: ${res.value.canvasUrl}` : '.'}`

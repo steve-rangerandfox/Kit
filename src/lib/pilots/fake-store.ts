@@ -16,6 +16,8 @@ import type {
 } from './types'
 
 export interface FakePilotStore extends PilotStorePort {
+  /** Seeded project → workspace map (authoritative source for create auth). */
+  projectWorkspaces: Record<string, string>
   pilots: PilotRow[]
   references: ReferenceRow[]
   evidence: EvidenceRow[]
@@ -29,6 +31,7 @@ export function makeFakePilotStore(): FakePilotStore {
   const id = (prefix: string) => `${prefix}_${++seq}`
   const T = '2026-01-01T00:00:00.000Z'
 
+  const projectWorkspaces: Record<string, string> = {}
   const pilots: PilotRow[] = []
   const references: ReferenceRow[] = []
   const evidence: EvidenceRow[] = []
@@ -37,6 +40,7 @@ export function makeFakePilotStore(): FakePilotStore {
   const validations: ValidationRow[] = []
 
   return {
+    projectWorkspaces,
     pilots,
     references,
     evidence,
@@ -44,6 +48,9 @@ export function makeFakePilotStore(): FakePilotStore {
     materialMaps,
     validations,
 
+    async getProjectWorkspaceId(projectId) {
+      return projectWorkspaces[projectId] ?? null
+    },
     async getPilotById(pid) {
       return pilots.find((p) => p.id === pid) ?? null
     },

@@ -1,13 +1,19 @@
 /**
  * Pilots — orchestration over injected ports.
  *
- * This is the state-transition owner. Every mutating operation enforces its
- * invariant HERE (attribution, acceptance-not-by-default, the deterministic
- * completeness gate before finalization, authorization that never trusts button
- * visibility) and delegates persistence to a PilotStorePort and Canvas I/O to a
- * PilotCanvasPort. Both ports are injected so the guarantees are unit-tested with
- * in-memory fakes, not a live Supabase/Slack. `defaultPilotDeps()` wires the real
- * store + canvas for the Bolt handler.
+ * This is the state-transition owner and the single authorization boundary.
+ * EVERY public operation takes an `ActorContext` and is authorized through one
+ * shared path (`requirePilotAccess` / `requireProjectAccess`) before any read or
+ * write: the authoritative workspace is derived from the existing project/pilot
+ * RECORD, never trusted from caller input, and the acting user must be present.
+ * Because these operations run under the Supabase service role (RLS does not
+ * protect them), this layer — not RLS, not the handler — is where cross-workspace
+ * access is rejected.
+ *
+ * Persistence is delegated to a PilotStorePort and Canvas I/O to a
+ * PilotCanvasPort; both are injected so the guarantees are unit-tested with
+ * in-memory fakes. `defaultPilotDeps()` (in ./defaults) wires the real store +
+ * canvas for the Bolt handler, which stays thin.
  */
 
 import { pilotCanvasTitle } from './canvas'
@@ -27,9 +33,19 @@ import type {
   ValidationTool,
 } from './types'
 
+// ─── Actor context ───────────────────────────────────────────────────────────
+
+/** Authenticated caller. The service authorizes every operation against this. */
+export interface ActorContext {
+  actingUserId: string
+  workspaceId: string
+}
+
 // ─── Ports ───────────────────────────────────────────────────────────────────
 
 export interface PilotStorePort {
+  /** Authoritative workspace of an existing project (for create authorization). */
+  getProjectWorkspaceId(projectId: string): Promise<string | null>
   getPilotById(id: string): Promise<PilotRow | null>
   getActivePilot(projectId: string, pilotType: string): Promise<PilotRow | null>
   insertPilot(v: {
@@ -83,23 +99,64 @@ function fail<T>(reason: string, detail?: unknown): ServiceResult<T> {
   return { ok: false, reason, detail }
 }
 
+// ─── Shared authorization path ───────────────────────────────────────────────
+
+/**
+ * Authorize an operation on an existing pilot. Loads the pilot and derives the
+ * authoritative workspace FROM THE RECORD (never from caller input). Returns the
+ * loaded pilot for reuse so callers don't re-fetch.
+ */
+async function requirePilotAccess(
+  deps: PilotDeps,
+  pilotId: string,
+  actor: ActorContext,
+): Promise<ServiceResult<PilotRow>> {
+  const pilot = await deps.store.getPilotById(pilotId)
+  const auth = authorizePilotAction(pilot, actor)
+  if (!auth.ok) return fail(`unauthorized:${auth.reason}`)
+  return ok(pilot as PilotRow)
+}
+
+/**
+ * Authorize creating a pilot for an existing project: the project must exist and
+ * its authoritative workspace (from the projects record) must match the actor's
+ * workspace. Returns the project's workspace id so the new pilot is stamped with
+ * the authoritative value, not caller input.
+ */
+async function requireProjectAccess(
+  deps: PilotDeps,
+  projectId: string,
+  actor: ActorContext,
+): Promise<ServiceResult<string>> {
+  if (!actor.actingUserId) return fail('unauthorized:not_authorized')
+  const projectWorkspaceId = await deps.store.getProjectWorkspaceId(projectId)
+  if (!projectWorkspaceId) return fail('project_not_found')
+  if (projectWorkspaceId !== actor.workspaceId) return fail('unauthorized:wrong_workspace')
+  return ok(projectWorkspaceId)
+}
+
 // ─── Create ──────────────────────────────────────────────────────────────────
 
 export async function createVisualDevPilot(
   deps: PilotDeps,
-  args: { projectId: string; workspaceId: string | null; title: string | null; createdBy: string | null },
+  args: { projectId: string; title: string | null; actor: ActorContext },
 ): Promise<ServiceResult<PilotRow>> {
+  const access = await requireProjectAccess(deps, args.projectId, args.actor)
+  if (!access.ok) return access
+  const projectWorkspaceId = access.value
+
   // Defensive pre-check mirroring the DB partial-unique index: at most one active
-  // pilot of this type per project. The index is the authoritative guarantee;
-  // this returns a friendly reason before hitting the constraint.
+  // pilot of this type per project. The index is the authoritative guarantee.
   const existing = await deps.store.getActivePilot(args.projectId, 'visual_development')
   if (existing) return fail('active_pilot_exists', existing.id)
+
   const pilot = await deps.store.insertPilot({
     project_id: args.projectId,
-    workspace_id: args.workspaceId,
+    // Authoritative workspace derived from the project, never caller input.
+    workspace_id: projectWorkspaceId,
     pilot_type: 'visual_development',
     title: args.title,
-    created_by: args.createdBy,
+    created_by: args.actor.actingUserId,
   })
   return ok(pilot)
 }
@@ -114,12 +171,15 @@ export async function addReference(
     url?: string | null
     label?: string | null
     description?: string | null
-    author: string
     provenance?: Record<string, unknown> | null
+    actor: ActorContext
   },
 ): Promise<ServiceResult<ReferenceRow>> {
-  if (!args.author) return fail('author_required')
-  if ((args.refType === 'pinterest' || args.refType === 'figma_moodboard') && !args.url) {
+  const access = await requirePilotAccess(deps, args.pilotId, args.actor)
+  if (!access.ok) return access
+  // Pinterest / Figma references require a non-empty (trimmed) URL — matches the
+  // DB constraint so a whitespace-only value is rejected here too.
+  if ((args.refType === 'pinterest' || args.refType === 'figma_moodboard') && !nonEmpty(args.url)) {
     return fail('url_required')
   }
   const row = await deps.store.insertReference({
@@ -129,7 +189,7 @@ export async function addReference(
     label: args.label ?? null,
     description: args.description ?? null,
     provenance: args.provenance ?? null,
-    author: args.author,
+    author: args.actor.actingUserId,
   })
   return ok(row)
 }
@@ -138,9 +198,11 @@ export async function addReference(
 
 export async function setVisualLanguage(
   deps: PilotDeps,
-  args: { pilotId: string; text: string },
+  args: { pilotId: string; text: string; actor: ActorContext },
 ): Promise<ServiceResult<null>> {
-  if (!args.text || !args.text.trim()) return fail('empty_visual_language')
+  const access = await requirePilotAccess(deps, args.pilotId, args.actor)
+  if (!access.ok) return access
+  if (!nonEmpty(args.text)) return fail('empty_visual_language')
   await deps.store.updatePilot(args.pilotId, { visual_language: args.text })
   return ok(null)
 }
@@ -152,7 +214,6 @@ export async function recordEvidence(
   args: {
     pilotId: string
     category: EvidenceCategory
-    author: string
     metricKey?: string | null
     label?: string | null
     valueNumeric?: number | null
@@ -160,14 +221,19 @@ export async function recordEvidence(
     unit?: string | null
     observedAt?: string | null
     provenance?: Record<string, unknown> | null
+    actor: ActorContext
   },
 ): Promise<ServiceResult<EvidenceRow>> {
-  if (!args.author) return fail('author_required')
+  const access = await requirePilotAccess(deps, args.pilotId, args.actor)
+  if (!access.ok) return access
   // Measurements must carry a stable metric_key AND a structured value, so a
-  // subjective note can never be filed as an objective measurement.
+  // subjective note can never be filed as an objective measurement. A
+  // metric_key on a non-measurement row is rejected (matches the DB constraint).
   if (args.category === 'measurement') {
     if (!args.metricKey) return fail('measurement_requires_metric_key')
     if (args.valueNumeric == null && !nonEmpty(args.valueText)) return fail('measurement_requires_value')
+  } else if (args.metricKey) {
+    return fail('metric_key_only_on_measurement')
   }
   const row = await deps.store.insertEvidence({
     pilot_id: args.pilotId,
@@ -179,7 +245,7 @@ export async function recordEvidence(
     unit: args.unit ?? null,
     observed_at: args.observedAt ?? null,
     provenance: args.provenance ?? null,
-    author: args.author,
+    author: args.actor.actingUserId,
   })
   return ok(row)
 }
@@ -190,16 +256,17 @@ export async function recordGeneration(
   deps: PilotDeps,
   args: {
     pilotId: string
-    author: string
     source?: string | null
     kind?: string | null
     externalRef?: string | null
     label?: string | null
     notes?: string | null
     provenance?: Record<string, unknown> | null
+    actor: ActorContext
   },
 ): Promise<ServiceResult<GenerationRow>> {
-  if (!args.author) return fail('author_required')
+  const access = await requirePilotAccess(deps, args.pilotId, args.actor)
+  if (!access.ok) return access
   const row = await deps.store.insertGeneration({
     pilot_id: args.pilotId,
     source: args.source ?? null,
@@ -208,7 +275,7 @@ export async function recordGeneration(
     label: args.label ?? null,
     notes: args.notes ?? null,
     provenance: args.provenance ?? null,
-    author: args.author,
+    author: args.actor.actingUserId,
   })
   return ok(row)
 }
@@ -216,31 +283,23 @@ export async function recordGeneration(
 /**
  * Explicit, attributed human acceptance/rejection. Nothing is accepted by
  * default; an acceptance records the accepting human + timestamp. Authorization
- * is workspace-scoped and never relies on button visibility.
+ * is workspace-scoped (derived from the pilot the generation belongs to) and
+ * never relies on message/button visibility.
  */
 export async function decideGenerationAcceptance(
   deps: PilotDeps,
-  args: { generationId: string; accept: boolean; actingUserId: string; workspaceId: string },
+  args: { generationId: string; accept: boolean; actor: ActorContext },
 ): Promise<ServiceResult<null>> {
   const gen = await deps.store.getGenerationById(args.generationId)
   if (!gen) return fail('generation_not_found')
-  const pilot = await deps.store.getPilotById(gen.pilot_id)
-  const auth = authorizePilotAction(pilot, { actingUserId: args.actingUserId, workspaceId: args.workspaceId })
-  if (!auth.ok) return fail(`unauthorized:${auth.reason}`)
-  if (pilot!.status !== 'active') return fail('pilot_not_active')
-  if (args.accept) {
-    await deps.store.setGenerationAcceptance(args.generationId, {
-      acceptance: 'accepted',
-      accepted_by: args.actingUserId,
-      accepted_at: deps.now(),
-    })
-  } else {
-    await deps.store.setGenerationAcceptance(args.generationId, {
-      acceptance: 'rejected',
-      accepted_by: args.actingUserId,
-      accepted_at: deps.now(),
-    })
-  }
+  const access = await requirePilotAccess(deps, gen.pilot_id, args.actor)
+  if (!access.ok) return access
+  if (access.value.status !== 'active') return fail('pilot_not_active')
+  await deps.store.setGenerationAcceptance(args.generationId, {
+    acceptance: args.accept ? 'accepted' : 'rejected',
+    accepted_by: args.actor.actingUserId,
+    accepted_at: deps.now(),
+  })
   return ok(null)
 }
 
@@ -253,12 +312,13 @@ export async function recordMaterialMap(
     packageName: string
     mapType: MaterialMapType
     purpose: string
-    author: string
     externalRef?: string | null
     provenance?: Record<string, unknown> | null
+    actor: ActorContext
   },
 ): Promise<ServiceResult<MaterialMapRow>> {
-  if (!args.author) return fail('author_required')
+  const access = await requirePilotAccess(deps, args.pilotId, args.actor)
+  if (!access.ok) return access
   if (!nonEmpty(args.packageName)) return fail('package_name_required')
   // Every map must state a production purpose (also NOT NULL/non-empty in the DB).
   if (!nonEmpty(args.purpose)) return fail('purpose_required')
@@ -269,7 +329,7 @@ export async function recordMaterialMap(
     purpose: args.purpose,
     external_ref: args.externalRef ?? null,
     provenance: args.provenance ?? null,
-    author: args.author,
+    author: args.actor.actingUserId,
   })
   return ok(row)
 }
@@ -283,13 +343,14 @@ export async function recordValidation(
     tool: ValidationTool
     evidenceRef: string
     passed: boolean
-    author: string
     subject?: string | null
     note?: string | null
     provenance?: Record<string, unknown> | null
+    actor: ActorContext
   },
 ): Promise<ServiceResult<ValidationRow>> {
-  if (!args.author) return fail('author_required')
+  const access = await requirePilotAccess(deps, args.pilotId, args.actor)
+  if (!access.ok) return access
   // Technical validity requires RECORDED evidence (also NOT NULL/non-empty in DB).
   if (!nonEmpty(args.evidenceRef)) return fail('evidence_ref_required')
   const row = await deps.store.insertValidation({
@@ -300,7 +361,7 @@ export async function recordValidation(
     subject: args.subject ?? null,
     note: args.note ?? null,
     provenance: args.provenance ?? null,
-    author: args.author,
+    author: args.actor.actingUserId,
   })
   return ok(row)
 }
@@ -313,17 +374,13 @@ export async function finalizeRecommendation(
     pilotId: string
     recommendation: string
     rationale: string | null
-    actingUserId: string
-    workspaceId: string
+    actor: ActorContext
   },
 ): Promise<ServiceResult<PilotRow> & { finalize?: FinalizeDecision }> {
+  const access = await requirePilotAccess(deps, args.pilotId, args.actor)
+  if (!access.ok) return access
   const snapshot = await deps.store.loadSnapshot(args.pilotId)
   if (!snapshot) return fail('pilot_not_found')
-  const auth = authorizePilotAction(snapshot.pilot, {
-    actingUserId: args.actingUserId,
-    workspaceId: args.workspaceId,
-  })
-  if (!auth.ok) return fail(`unauthorized:${auth.reason}`)
 
   const decision = decideFinalize(snapshot, args.recommendation)
   if (!decision.ok) {
@@ -336,7 +393,7 @@ export async function finalizeRecommendation(
     status: 'finalized',
     recommendation: decision.recommendation,
     recommendation_rationale: args.rationale,
-    recommendation_by: args.actingUserId,
+    recommendation_by: args.actor.actingUserId,
     recommendation_at: deps.now(),
   })
   const updated = await deps.store.getPilotById(args.pilotId)
@@ -348,12 +405,15 @@ export async function finalizeRecommendation(
 /**
  * Deterministically (re)render the pilot's dedicated read-only Canvas from the
  * authoritative snapshot. Creates the canvas on first render, edits it
- * thereafter — the canvas identity is persisted on the pilot row.
+ * thereafter — the canvas identity is persisted on the pilot row. Authorized
+ * like every other operation (a foreign workspace cannot render/show a pilot).
  */
 export async function refreshPilotCanvas(
   deps: PilotDeps,
-  args: { pilotId: string; channelId: string },
+  args: { pilotId: string; channelId: string; actor: ActorContext },
 ): Promise<ServiceResult<{ canvasId: string; canvasUrl: string | null }>> {
+  const access = await requirePilotAccess(deps, args.pilotId, args.actor)
+  if (!access.ok) return access
   const snapshot = await deps.store.loadSnapshot(args.pilotId)
   if (!snapshot) return fail('pilot_not_found')
   const markdown = renderPilotCanvas(snapshot)

@@ -22,7 +22,7 @@ function basePilot(over: Partial<PilotRow> = {}): PilotRow {
 function complete(pilot: PilotRow): PilotSnapshot {
   const ref = (t: ReferenceRow['ref_type']): ReferenceRow => ({ id: 'r' + t, pilot_id: 'p', ref_type: t, url: 'u', label: null, description: null, provenance: null, author: 'u', created_at: 't' })
   const gen = (a: GenerationRow['acceptance']): GenerationRow => ({ id: 'g' + a, pilot_id: 'p', source: null, kind: null, external_ref: 'x', label: null, acceptance: a, accepted_by: a === 'accepted' ? 'u' : null, accepted_at: null, notes: null, provenance: null, author: 'u', created_at: 't' })
-  const ev = (c: EvidenceRow['category'], k: string | null = null): EvidenceRow => ({ id: 'e' + c + (k ?? ''), pilot_id: 'p', category: c, metric_key: k, label: 'l', value_numeric: k ? 1 : null, value_text: k ? null : 'none', unit: null, observed_at: null, provenance: null, author: 'u', created_at: 't' })
+  const ev = (c: EvidenceRow['category'], k: string | null = null): EvidenceRow => ({ id: 'e' + c + (k ?? ''), pilot_id: 'p', category: c, metric_key: k, label: 'l', value_numeric: k ? 1 : null, value_text: k ? null : 'none', unit: k ? 'u' : null, observed_at: null, provenance: null, author: 'u', created_at: 't' })
   const map: MaterialMapRow = { id: 'm', pilot_id: 'p', package_name: 'pkg', map_type: 'albedo', purpose: 'base', external_ref: null, provenance: null, author: 'u', created_at: 't' }
   const val = (tool: ValidationRow['tool']): ValidationRow => ({ id: 'v' + tool, pilot_id: 'p', tool, evidence_ref: 'r', subject: null, passed: true, note: null, provenance: null, author: 'u', created_at: 't' })
   return {

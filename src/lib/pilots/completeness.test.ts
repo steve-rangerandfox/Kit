@@ -127,3 +127,67 @@ describe('evaluateCompleteness (visual_development)', () => {
     }
   })
 })
+
+describe('completeness requires PASSING technical validation', () => {
+  function withValidations(vals: ValidationRow[]): PilotSnapshot {
+    const s = completeSnapshot()
+    s.validations = vals
+    return s
+  }
+  const fail = (tool: ValidationRow['tool']): ValidationRow => ({ ...validation(tool), passed: false })
+
+  it('both failed → both tools missing', () => {
+    const res = evaluateCompleteness(withValidations([fail('cinema4d'), fail('redshift')]))
+    assert.ok(res.missing.some((m) => m.key === 'cinema4d_validation'))
+    assert.ok(res.missing.some((m) => m.key === 'redshift_validation'))
+  })
+
+  it('one passed / one failed → the failed tool missing', () => {
+    const res = evaluateCompleteness(withValidations([validation('cinema4d'), fail('redshift')]))
+    assert.ok(!res.missing.some((m) => m.key === 'cinema4d_validation'))
+    assert.ok(res.missing.some((m) => m.key === 'redshift_validation'))
+  })
+
+  it('both passed → neither tool missing', () => {
+    const res = evaluateCompleteness(withValidations([validation('cinema4d'), validation('redshift')]))
+    assert.ok(!res.missing.some((m) => m.key === 'cinema4d_validation'))
+    assert.ok(!res.missing.some((m) => m.key === 'redshift_validation'))
+  })
+
+  it('a failed validation alongside a passing one still satisfies (evidence retained)', () => {
+    const res = evaluateCompleteness(withValidations([validation('cinema4d'), fail('cinema4d'), validation('redshift')]))
+    assert.equal(res.complete, true, JSON.stringify(res.missing))
+  })
+})
+
+describe('completeness independently re-verifies measurement rows', () => {
+  function withTimeMeasurement(over: Partial<EvidenceRow>): PilotSnapshot {
+    const s = completeSnapshot()
+    s.evidence = s.evidence.filter((e) => e.metric_key !== 'time')
+    s.evidence.push({ ...measurement('time'), ...over })
+    return s
+  }
+
+  it('rejects a measurement with no meaningful value', () => {
+    const res = evaluateCompleteness(withTimeMeasurement({ value_numeric: null, value_text: '   ' }))
+    assert.ok(res.missing.some((m) => m.key === 'measurement:time'))
+  })
+
+  it('rejects a measurement with no attribution', () => {
+    const res = evaluateCompleteness(withTimeMeasurement({ author: '' }))
+    assert.ok(res.missing.some((m) => m.key === 'measurement:time'))
+  })
+
+  it('rejects a dimensional measurement (time/cost) with no unit', () => {
+    const res = evaluateCompleteness(withTimeMeasurement({ unit: null }))
+    assert.ok(res.missing.some((m) => m.key === 'measurement:time'))
+  })
+
+  it('a mislabeled measurement (wrong metric_key) does not satisfy the requirement', () => {
+    const s = completeSnapshot()
+    s.evidence = s.evidence.filter((e) => e.metric_key !== 'time')
+    s.evidence.push({ ...measurement('time'), metric_key: 'not_time' })
+    const res = evaluateCompleteness(s)
+    assert.ok(res.missing.some((m) => m.key === 'measurement:time'))
+  })
+})

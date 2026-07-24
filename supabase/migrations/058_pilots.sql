@@ -109,6 +109,20 @@ create table if not exists public.pilot_evidence (
   provenance jsonb,
   -- Who recorded it (Slack user id or 'system'). Required — no anonymous evidence.
   author text not null,
+  -- Measurement integrity (structural, not only in code):
+  --   * a measurement must carry a metric_key;
+  --   * a measurement must carry a structured value (a number, or non-empty text);
+  --   * a NON-measurement row must not carry a metric_key (keeps categories clean).
+  constraint pilot_evidence_measurement_metric_key
+    check (category <> 'measurement' or metric_key is not null),
+  constraint pilot_evidence_measurement_has_value
+    check (
+      category <> 'measurement'
+      or value_numeric is not null
+      or (value_text is not null and length(btrim(value_text)) > 0)
+    ),
+  constraint pilot_evidence_metric_key_scope
+    check (category = 'measurement' or metric_key is null),
   created_at timestamptz not null default now()
 );
 
@@ -171,10 +185,14 @@ create table if not exists public.pilot_references (
   provenance jsonb,
   author text not null,
   created_at timestamptz not null default now(),
-  -- Pinterest research + the Figma moodboard are external links → require a URL.
-  -- A styleframe_direction may be a described direction without a URL.
+  -- Pinterest research + the Figma moodboard are external links → require a
+  -- non-empty (trimmed) URL. A styleframe_direction may be a described direction
+  -- without a URL.
   constraint pilot_references_link_requires_url
-    check (ref_type not in ('pinterest', 'figma_moodboard') or url is not null)
+    check (
+      ref_type not in ('pinterest', 'figma_moodboard')
+      or (url is not null and length(btrim(url)) > 0)
+    )
 );
 
 -- EXACTLY ONE designated Figma moodboard per pilot.

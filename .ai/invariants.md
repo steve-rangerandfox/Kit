@@ -124,8 +124,9 @@ mechanism in code before assuming full compliance.
     pure completeness gate (`src/lib/pilots/completeness.ts`) passes, enforced in
     the state-transition owner; the recommendation is **human-authored**, never
     model-generated. At most one **active** pilot per (project, type). *(Verified
-    in `src/lib/pilots/*` unit + controlled-workflow tests — 43 cases via
-    `npx tsx --test`. The DB constraints/triggers are defined in migration 058
+    in `src/lib/pilots/*` unit + controlled-workflow tests — 55 cases via
+    `npx tsx --test` (incl. cross-workspace authorization rejection for every
+    operation). The DB constraints/triggers are defined in migration 058
     but NOT yet applied; do not mark the structural DB guarantees fully verified
     until the migration is applied.)*
 

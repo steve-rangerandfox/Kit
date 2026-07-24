@@ -13,6 +13,8 @@
 
 import {
   REQUIRED_MEASUREMENT_KEYS,
+  UNIT_REQUIRED_MEASUREMENT_KEYS,
+  type EvidenceRow,
   type PilotSnapshot,
   type PilotType,
 } from './types'
@@ -96,22 +98,24 @@ function evaluateVisualDevelopment(s: PilotSnapshot): CompletenessResult {
   // Every recorded map carries a purpose — structurally guaranteed by the schema
   // (purpose NOT NULL + non-empty), so a map without a purpose cannot exist.
 
-  // Cinema 4D / Redshift validation evidence: at least one of each tool, each
-  // carrying recorded evidence (evidence_ref is NOT NULL by schema).
-  if (!s.validations.some((v) => v.tool === 'cinema4d')) {
-    missing.push({ key: 'cinema4d_validation', detail: 'Cinema 4D validation evidence is required' })
+  // Cinema 4D / Redshift validation: at least one PASSED (passed === true)
+  // record of each tool. A failed validation is still evidence (and still
+  // renders), but it cannot satisfy finalization.
+  if (!s.validations.some((v) => v.tool === 'cinema4d' && v.passed === true)) {
+    missing.push({ key: 'cinema4d_validation', detail: 'A passing Cinema 4D validation is required' })
   }
-  if (!s.validations.some((v) => v.tool === 'redshift')) {
-    missing.push({ key: 'redshift_validation', detail: 'Redshift validation evidence is required' })
+  if (!s.validations.some((v) => v.tool === 'redshift' && v.passed === true)) {
+    missing.push({ key: 'redshift_validation', detail: 'A passing Redshift validation is required' })
   }
 
-  // Required objective measurements — each metric_key present as a measurement.
-  const measuredKeys = new Set(
-    s.evidence.filter((e) => e.category === 'measurement' && e.metric_key).map((e) => e.metric_key as string),
-  )
+  // Required objective measurements — each key must be satisfied by at least one
+  // VALID measurement row. The gate independently re-verifies validity (metric
+  // key, meaningful value, attribution, unit where appropriate) rather than
+  // trusting that a stored measurement row is well-formed — so a malformed row
+  // never counts toward completeness.
   for (const key of REQUIRED_MEASUREMENT_KEYS) {
-    if (!measuredKeys.has(key)) {
-      missing.push({ key: `measurement:${key}`, detail: `Measurement '${key}' is required` })
+    if (!s.evidence.some((e) => isValidMeasurement(e, key))) {
+      missing.push({ key: `measurement:${key}`, detail: `A valid measurement '${key}' is required` })
     }
   }
 
@@ -140,6 +144,23 @@ function evaluateVisualDevelopment(s: PilotSnapshot): CompletenessResult {
 
 function nonEmpty(v: string | null | undefined): boolean {
   return typeof v === 'string' && v.trim().length > 0
+}
+
+/**
+ * Independent validity check for a required measurement row. A row satisfies a
+ * required metric only when it is a measurement for that exact key, carries a
+ * meaningful value (a finite number, or non-empty text), is attributed, and —
+ * for dimensional metrics (time, cost) — carries a non-empty unit. This makes
+ * the gate robust to malformed rows that may exist despite the DB constraints.
+ */
+export function isValidMeasurement(e: EvidenceRow, key: string): boolean {
+  if (e.category !== 'measurement') return false
+  if (e.metric_key !== key) return false
+  const hasValue = (typeof e.value_numeric === 'number' && Number.isFinite(e.value_numeric)) || nonEmpty(e.value_text)
+  if (!hasValue) return false
+  if (!nonEmpty(e.author)) return false
+  if ((UNIT_REQUIRED_MEASUREMENT_KEYS as readonly string[]).includes(key) && !nonEmpty(e.unit)) return false
+  return true
 }
 
 /** All pilot types the gate understands — for tooling/tests. */

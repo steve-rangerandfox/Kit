@@ -74,6 +74,13 @@ export const REQUIRED_MEASUREMENT_KEYS: readonly string[] = [
   'reuse_willingness',
 ] as const
 
+/**
+ * Dimensional measurements for which a bare number is ambiguous, so the
+ * completeness gate additionally requires a non-empty unit. The rating-style
+ * metrics (originality, quality, …) are legitimately unitless and are not listed.
+ */
+export const UNIT_REQUIRED_MEASUREMENT_KEYS: readonly string[] = ['time', 'cost'] as const
+
 // ─── Row shapes ──────────────────────────────────────────────────────────────
 
 export interface PilotRow {

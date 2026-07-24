@@ -11,6 +11,7 @@ import {
   getActivePilot,
   getGenerationById,
   getPilotById,
+  getProjectWorkspaceId,
   insertEvidence,
   insertGeneration,
   insertMaterialMap,
@@ -26,6 +27,7 @@ import { createPilotCanvas, editPilotCanvas } from './canvas'
 export function defaultPilotDeps(): PilotDeps {
   return {
     store: {
+      getProjectWorkspaceId,
       getPilotById,
       getActivePilot,
       insertPilot,

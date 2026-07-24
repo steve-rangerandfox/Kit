@@ -57,6 +57,15 @@ function db(): SupabaseLike {
   return clientFactory() as unknown as SupabaseLike
 }
 
+// ─── Project (authoritative workspace lookup) ────────────────────────────────
+
+/** The authoritative workspace of an existing project (for create auth). */
+export async function getProjectWorkspaceId(projectId: string): Promise<string | null> {
+  const { data } = await db().from('projects').select('workspace_id').eq('id', projectId).maybeSingle()
+  const row = data as { workspace_id?: string | null } | null
+  return row?.workspace_id ?? null
+}
+
 // ─── Pilot record ────────────────────────────────────────────────────────────
 
 export async function insertPilot(values: {
