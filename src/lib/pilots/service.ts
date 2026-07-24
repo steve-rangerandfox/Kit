@@ -18,7 +18,7 @@
 
 import { pilotCanvasTitle } from './canvas'
 import { renderPilotCanvas } from './render'
-import { authorizePilotAction, decideFinalize, type FinalizeDecision } from './transitions'
+import { authorizePilotAction, decideFinalize, type AuthDecision, type FinalizeDecision } from './transitions'
 import type {
   EvidenceCategory,
   EvidenceRow,
@@ -99,6 +99,19 @@ function fail<T>(reason: string, detail?: unknown): ServiceResult<T> {
   return { ok: false, reason, detail }
 }
 
+// Type-guard narrowing (not boolean-discriminant narrowing) so these compile
+// identically under the root's strict tsconfig AND the Bolt package's
+// non-strict one, where `if (!x.ok)` does not narrow a boolean-tagged union.
+function isErr(r: ServiceResult<unknown>): r is { ok: false; reason: string; detail?: unknown } {
+  return !r.ok
+}
+function isDenied(a: AuthDecision): a is Extract<AuthDecision, { ok: false }> {
+  return !a.ok
+}
+function isBlocked(d: FinalizeDecision): d is Extract<FinalizeDecision, { ok: false }> {
+  return !d.ok
+}
+
 // ─── Shared authorization path ───────────────────────────────────────────────
 
 /**
@@ -113,7 +126,7 @@ async function requirePilotAccess(
 ): Promise<ServiceResult<PilotRow>> {
   const pilot = await deps.store.getPilotById(pilotId)
   const auth = authorizePilotAction(pilot, actor)
-  if (!auth.ok) return fail(`unauthorized:${auth.reason}`)
+  if (isDenied(auth)) return fail(`unauthorized:${auth.reason}`)
   return ok(pilot as PilotRow)
 }
 
@@ -142,7 +155,7 @@ export async function createVisualDevPilot(
   args: { projectId: string; title: string | null; actor: ActorContext },
 ): Promise<ServiceResult<PilotRow>> {
   const access = await requireProjectAccess(deps, args.projectId, args.actor)
-  if (!access.ok) return access
+  if (isErr(access)) return access
   const projectWorkspaceId = access.value
 
   // Defensive pre-check mirroring the DB partial-unique index: at most one active
@@ -176,7 +189,7 @@ export async function addReference(
   },
 ): Promise<ServiceResult<ReferenceRow>> {
   const access = await requirePilotAccess(deps, args.pilotId, args.actor)
-  if (!access.ok) return access
+  if (isErr(access)) return access
   // Pinterest / Figma references require a non-empty (trimmed) URL — matches the
   // DB constraint so a whitespace-only value is rejected here too.
   if ((args.refType === 'pinterest' || args.refType === 'figma_moodboard') && !nonEmpty(args.url)) {
@@ -201,7 +214,7 @@ export async function setVisualLanguage(
   args: { pilotId: string; text: string; actor: ActorContext },
 ): Promise<ServiceResult<null>> {
   const access = await requirePilotAccess(deps, args.pilotId, args.actor)
-  if (!access.ok) return access
+  if (isErr(access)) return access
   if (!nonEmpty(args.text)) return fail('empty_visual_language')
   await deps.store.updatePilot(args.pilotId, { visual_language: args.text })
   return ok(null)
@@ -225,7 +238,7 @@ export async function recordEvidence(
   },
 ): Promise<ServiceResult<EvidenceRow>> {
   const access = await requirePilotAccess(deps, args.pilotId, args.actor)
-  if (!access.ok) return access
+  if (isErr(access)) return access
   // Measurements must carry a stable metric_key AND a structured value, so a
   // subjective note can never be filed as an objective measurement. A
   // metric_key on a non-measurement row is rejected (matches the DB constraint).
@@ -266,7 +279,7 @@ export async function recordGeneration(
   },
 ): Promise<ServiceResult<GenerationRow>> {
   const access = await requirePilotAccess(deps, args.pilotId, args.actor)
-  if (!access.ok) return access
+  if (isErr(access)) return access
   const row = await deps.store.insertGeneration({
     pilot_id: args.pilotId,
     source: args.source ?? null,
@@ -293,7 +306,7 @@ export async function decideGenerationAcceptance(
   const gen = await deps.store.getGenerationById(args.generationId)
   if (!gen) return fail('generation_not_found')
   const access = await requirePilotAccess(deps, gen.pilot_id, args.actor)
-  if (!access.ok) return access
+  if (isErr(access)) return access
   if (access.value.status !== 'active') return fail('pilot_not_active')
   await deps.store.setGenerationAcceptance(args.generationId, {
     acceptance: args.accept ? 'accepted' : 'rejected',
@@ -318,7 +331,7 @@ export async function recordMaterialMap(
   },
 ): Promise<ServiceResult<MaterialMapRow>> {
   const access = await requirePilotAccess(deps, args.pilotId, args.actor)
-  if (!access.ok) return access
+  if (isErr(access)) return access
   if (!nonEmpty(args.packageName)) return fail('package_name_required')
   // Every map must state a production purpose (also NOT NULL/non-empty in the DB).
   if (!nonEmpty(args.purpose)) return fail('purpose_required')
@@ -350,7 +363,7 @@ export async function recordValidation(
   },
 ): Promise<ServiceResult<ValidationRow>> {
   const access = await requirePilotAccess(deps, args.pilotId, args.actor)
-  if (!access.ok) return access
+  if (isErr(access)) return access
   // Technical validity requires RECORDED evidence (also NOT NULL/non-empty in DB).
   if (!nonEmpty(args.evidenceRef)) return fail('evidence_ref_required')
   const row = await deps.store.insertValidation({
@@ -378,12 +391,12 @@ export async function finalizeRecommendation(
   },
 ): Promise<ServiceResult<PilotRow> & { finalize?: FinalizeDecision }> {
   const access = await requirePilotAccess(deps, args.pilotId, args.actor)
-  if (!access.ok) return access
+  if (isErr(access)) return access
   const snapshot = await deps.store.loadSnapshot(args.pilotId)
   if (!snapshot) return fail('pilot_not_found')
 
   const decision = decideFinalize(snapshot, args.recommendation)
-  if (!decision.ok) {
+  if (isBlocked(decision)) {
     return { ...fail('finalize_blocked', decision), finalize: decision }
   }
 
@@ -413,7 +426,7 @@ export async function refreshPilotCanvas(
   args: { pilotId: string; channelId: string; actor: ActorContext },
 ): Promise<ServiceResult<{ canvasId: string; canvasUrl: string | null }>> {
   const access = await requirePilotAccess(deps, args.pilotId, args.actor)
-  if (!access.ok) return access
+  if (isErr(access)) return access
   const snapshot = await deps.store.loadSnapshot(args.pilotId)
   if (!snapshot) return fail('pilot_not_found')
   const markdown = renderPilotCanvas(snapshot)
